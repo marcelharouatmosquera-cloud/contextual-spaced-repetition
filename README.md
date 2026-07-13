@@ -56,6 +56,19 @@ available as `python scripts/sync_to_anki.py` for packaged install testing.
 To build a package yourself, run `python scripts/package_addon.py`, then install
 `dist/contextual_review_addon.ankiaddon` from Anki's add-on screen.
 
+### Publishing a new version
+
+After testing and pushing changes to `main`, create and push a version tag:
+
+```powershell
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The GitHub release workflow runs the tests and smoke review, builds the
+`.ankiaddon` package, creates a matching Release, and attaches the package as a
+download. Use a new version number for every release.
+
 ## Quick Start Inside Anki
 
 1. Open `Tools > Contextual Review > Settings`.

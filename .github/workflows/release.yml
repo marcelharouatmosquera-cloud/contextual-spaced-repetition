@@ -1,0 +1,35 @@
+name: Build release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Run smoke review
+        run: python scripts/smoke_review_loop.py
+
+      - name: Build add-on package
+        run: python scripts/package_addon.py --no-build-dir
+
+      - name: Create GitHub release
+        run: gh release create "$GITHUB_REF_NAME" dist/contextual_review_addon.ankiaddon --generate-notes --title "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
