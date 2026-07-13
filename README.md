@@ -10,7 +10,20 @@ real use needs a sentence corpus for the language you are learning.
 
 ## Install
 
-For local testing on Windows, double-click `sync_to_anki.bat` in this folder:
+Download `contextual_review_addon.ankiaddon` from the
+[latest GitHub release](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/releases/latest).
+In Anki, open `Tools > Add-ons`, choose `Install from file`, and select the
+downloaded file. Restart Anki when installation finishes.
+
+## Update
+
+Download the newer `.ankiaddon` file from the Releases page and install it the
+same way. Anki replaces the add-on code while keeping your add-on configuration,
+downloaded sentence corpus, favorites, and other files stored under
+`user_files/`.
+
+For local development on Windows, double-click `sync_to_anki.bat` in this
+folder:
 
 ```text
 sync_to_anki.bat
@@ -40,8 +53,8 @@ Use `--dry-run` to preview changes or `--no-clean` to leave old copied runtime
 files in the installed add-on folder. The older full-copy updater remains
 available as `python scripts/sync_to_anki.py` for packaged install testing.
 
-To install the packaged build, install `dist/contextual_review_addon.ankiaddon`
-from Anki's add-on screen.
+To build a package yourself, run `python scripts/package_addon.py`, then install
+`dist/contextual_review_addon.ankiaddon` from Anki's add-on screen.
 
 ## Quick Start Inside Anki
 
