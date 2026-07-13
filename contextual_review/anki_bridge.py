@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -760,6 +761,8 @@ def _db_all(db: Any, sql: str, params: Sequence[Any]) -> Sequence[Any]:
 
 
 def _db_execute(db: Any, sql: str, params: Sequence[Any] = ()) -> Any:
+    if isinstance(db, sqlite3.Connection):
+        return db.execute(sql, tuple(params))
     try:
         return db.execute(sql, *params)
     except (TypeError, ValueError):
