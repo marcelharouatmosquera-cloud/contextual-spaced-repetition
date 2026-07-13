@@ -1,0 +1,42 @@
+{
+  "deck_scope": "current",
+  "custom_search_query": "is:due -card:2 -card:3 -card:Reverse",
+  "deck_name": "",
+  "target_field": "Front",
+  "dictionary_field": "Back",
+  "solution_fields": [
+    {
+      "field": "Back",
+      "label": "",
+      "display": "auto",
+      "autoplay": false
+    }
+  ],
+  "note_types": [],
+  "included_card_templates": [],
+  "language": "en",
+  "native_language": "en",
+  "database_path": "user_files/contextual_sentences.db",
+  "max_due_cards": 20,
+  "max_imported_sentences": 100000,
+  "min_sentence_words": 4,
+  "max_sentence_words": 15,
+  "candidate_limit": 50,
+  "query_term_limit": 40,
+  "future_due_days": 0,
+  "matching_mode": "lemma_family",
+  "target_extraction_mode": "content_words",
+  "ignored_target_words": [],
+  "require_target_on_question": true,
+  "include_due_cards": true,
+  "include_new_cards": false,
+  "max_new_cards": 10,
+  "include_learning_cards": true,
+  "strict_import_filter": true,
+  "keep_downloaded_archives": false,
+  "dictionary_url_template": "",
+  "known_ease": 3,
+  "unknown_ease": 1,
+  "font_size": 34,
+  "deck_configs": []
+}

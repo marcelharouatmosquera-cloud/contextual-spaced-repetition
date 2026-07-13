@@ -1,0 +1,107 @@
+{
+  "ar": {
+    "name": "Arabic",
+    "tatoeba_code": "ara",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "da": {
+    "name": "Danish",
+    "tatoeba_code": "dan",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["af", "at", "de", "den", "det", "der", "en", "et", "i", "med", "og", "pa", "til"]
+  },
+  "de": {
+    "name": "German",
+    "tatoeba_code": "deu",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["am", "an", "auf", "aus", "das", "dem", "den", "der", "des", "die", "ein", "eine", "einem", "einen", "einer", "eines", "im", "in", "mit", "zu", "zum", "zur"]
+  },
+  "el": {
+    "name": "Greek",
+    "tatoeba_code": "ell",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "en": {
+    "name": "English",
+    "tatoeba_code": "eng",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["a", "an", "and", "of", "the", "to"]
+  },
+  "es": {
+    "name": "Spanish",
+    "tatoeba_code": "spa",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["a", "al", "de", "del", "el", "en", "la", "las", "los", "un", "una", "y"]
+  },
+  "fi": {
+    "name": "Finnish",
+    "tatoeba_code": "fin",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "fr": {
+    "name": "French",
+    "tatoeba_code": "fra",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["a", "au", "aux", "de", "des", "du", "en", "et", "la", "le", "les", "un", "une"]
+  },
+  "it": {
+    "name": "Italian",
+    "tatoeba_code": "ita",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["a", "al", "con", "da", "del", "di", "e", "gli", "i", "il", "in", "la", "le", "lo", "un", "una"]
+  },
+  "ja": {
+    "name": "Japanese",
+    "tatoeba_code": "jpn",
+    "dictionary_url_template": "https://jisho.org/search/{word}"
+  },
+  "ko": {
+    "name": "Korean",
+    "tatoeba_code": "kor",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "nl": {
+    "name": "Dutch",
+    "tatoeba_code": "nld",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["aan", "de", "een", "en", "het", "in", "met", "op", "te", "van"]
+  },
+  "pl": {
+    "name": "Polish",
+    "tatoeba_code": "pol",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "pt": {
+    "name": "Portuguese",
+    "tatoeba_code": "por",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["a", "as", "com", "da", "das", "de", "do", "dos", "e", "em", "o", "os", "um", "uma"]
+  },
+  "ru": {
+    "name": "Russian",
+    "tatoeba_code": "rus",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["\u0430", "\u0431\u0435\u0437", "\u0432", "\u0432\u043e", "\u0434\u043e", "\u0437\u0430", "\u0438", "\u0438\u0437", "\u043a", "\u043a\u0430\u043a", "\u043a\u043e", "\u043d\u0430", "\u043d\u0435", "\u043d\u043e", "\u043e", "\u043e\u0431", "\u043e\u0442", "\u043f\u043e", "\u0441", "\u0441\u043e", "\u0443", "\u0447\u0442\u043e", "\u044d\u0442\u043e"]
+  },
+  "sv": {
+    "name": "Swedish",
+    "tatoeba_code": "swe",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}",
+    "ignored_target_words": ["att", "av", "de", "den", "det", "en", "ett", "i", "med", "och", "pa", "till"]
+  },
+  "tr": {
+    "name": "Turkish",
+    "tatoeba_code": "tur",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "uk": {
+    "name": "Ukrainian",
+    "tatoeba_code": "ukr",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  },
+  "zh": {
+    "name": "Chinese",
+    "tatoeba_code": "cmn",
+    "dictionary_url_template": "https://en.wiktionary.org/wiki/{word}"
+  }
+}

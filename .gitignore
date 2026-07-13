@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+dist/
+data/downloads/
+tatoeba_downloads.html
+*.ankiaddon
+*.log
+meta.json
+user_files/*
+!user_files/README.txt
