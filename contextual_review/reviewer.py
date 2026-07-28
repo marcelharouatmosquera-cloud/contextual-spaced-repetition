@@ -480,6 +480,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._mine_word(
                 payload.get("word") or "",
                 payload.get("translation") or "",
+                payload.get("sentence_translation") or "",
             )
         elif payload.get("action") == "play_media":
             self._play_media(payload.get("source") or "")
@@ -711,7 +712,12 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         except Exception:
             self._notify_favorite_changed(False, "Could not update sentence favorites.")
 
-    def _mine_word(self, word: str, translation: str) -> None:
+    def _mine_word(
+        self,
+        word: str,
+        translation: str,
+        sentence_translation: str = "",
+    ) -> None:
         task = self.active_task
         target_word = str(word or "").strip()
         meaning = str(translation or "").strip()
@@ -722,13 +728,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._notify_mining_finished(False, "Translate the word before adding it.")
             return
 
+        translated_sentence = str(sentence_translation or "").strip()
+        mining_task = replace(task, translation=translated_sentence) if translated_sentence else task
+
         def create(audio_path: Optional[Path], audio_error: str = "") -> None:
             try:
                 from .note_creation import create_mined_note
 
                 result = create_mined_note(
                     self.mw,
-                    task,
+                    mining_task,
                     target_word,
                     meaning,
                     self.config,

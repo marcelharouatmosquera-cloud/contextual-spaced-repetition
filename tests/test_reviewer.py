@@ -195,6 +195,9 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog._request_translation = lambda text, kind, request_id=0: calls.append(
             (kind, text, request_id)
         )
+        dialog._mine_word = lambda word, meaning, sentence="": calls.append(
+            ("mine", word, meaning, sentence)
+        )
         dialog._play_media = lambda source: calls.append(("play_media", source))
         dialog._request_sentence_tts = lambda: calls.append("speak_sentence")
         dialog._undo_last_review = lambda: calls.append("undo")
@@ -206,6 +209,10 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog._on_bridge_command('{"action": "lookup", "words": ["review"]}')
         dialog._on_bridge_command('{"action": "translate_sentence", "sentence": "We review."}')
         dialog._on_bridge_command('{"action": "hover_translate", "text": "We", "request_id": 7}')
+        dialog._on_bridge_command(
+            '{"action": "mine_word", "word": "lernen", "translation": "learn", '
+            '"sentence_translation": "We learn."}'
+        )
         dialog._on_bridge_command('{"action": "play_media", "source": "voice.mp3"}')
         dialog._on_bridge_command('{"action": "speak_sentence"}')
         dialog._on_bridge_command('{"action": "undo"}')
@@ -220,6 +227,7 @@ class ReviewerBridgeTests(unittest.TestCase):
                 ("lookup", ("review",)),
                 ("sentence", "We review.", 0),
                 ("hover", "We", 7),
+                ("mine", "lernen", "learn", "We learn."),
                 ("play_media", "voice.mp3"),
                 "speak_sentence",
                 "undo",

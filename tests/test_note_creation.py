@@ -207,6 +207,54 @@ class NoteCreationTests(unittest.TestCase):
         self.assertEqual(mw.col.undo_labels, [])
         self.assertEqual(mw.col.added, [])
 
+    def test_mining_fills_plain_visible_and_numbered_sentence_field_pairs(self):
+        mw = self._mw()
+        mw.col.word_notetype = {
+            "name": "Russian Core 5000",
+            "flds": [
+                {"name": "Word"},
+                {"name": "Translation"},
+                {"name": "Sentence 1"},
+                {"name": "Sentence 1 Translation"},
+                {"name": "Sentence 2"},
+                {"name": "Sentence 2 Translation"},
+                {"name": "Audio Word"},
+                {"name": "Plain Word"},
+                {"name": "Plain Sentence 1"},
+                {"name": "Plain Sentence 2"},
+            ],
+        }
+        task = ReviewTask(
+            1,
+            "ru",
+            "Knowledge needs mercy. Mercy needs knowledge.",
+            "Knowledge requires mercy. Mercy requires knowledge.",
+            [],
+            {"mercy": [10]},
+        )
+        config = normalize_config(
+            {
+                "target_field": "Plain Word",
+                "dictionary_field": "Translation",
+                "solution_fields": [
+                    {"field": "Translation", "display": "text"},
+                    {"field": "Audio Word", "display": "audio"},
+                ],
+            }
+        )
+
+        create_mined_note(mw, task, "mercy", "compassion", config)
+
+        note, _deck_id = mw.col.added[0]
+        self.assertEqual(note["Word"], "mercy")
+        self.assertEqual(note["Plain Word"], "mercy")
+        self.assertEqual(note["Sentence 1"], "Knowledge needs mercy.")
+        self.assertEqual(note["Plain Sentence 1"], "Knowledge needs mercy.")
+        self.assertEqual(note["Sentence 1 Translation"], "Knowledge requires mercy.")
+        self.assertEqual(note["Sentence 2"], "Mercy needs knowledge.")
+        self.assertEqual(note["Plain Sentence 2"], "Mercy needs knowledge.")
+        self.assertEqual(note["Sentence 2 Translation"], "Mercy requires knowledge.")
+
     def test_favorites_export_uses_dedicated_deck_and_skips_duplicate_sentences(self):
         mw = self._mw()
         existing = FakeNote(mw.col.favorite_notetype)

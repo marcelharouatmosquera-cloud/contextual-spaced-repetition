@@ -63,15 +63,29 @@ def create_mined_note(
     if _note_already_exists(col, notetype, deck_id, target_field, target_word):
         raise ValueError("Note already exists!")
 
-    note[target_field] = html.escape(target_word)
+    escaped_target = html.escape(target_word)
+    note[target_field] = escaped_target
+    for companion in _plain_display_companions(field_names, target_field):
+        note[companion] = escaped_target
     note[solution_field] = html.escape(meaning)
-    sentence_field = _example_sentence_field(
+    sentence_fields = _example_sentence_fields(
         field_names,
         excluded=(target_field, solution_field),
     )
     sentence_html = html.escape(str(task.full_text or "").strip())
-    if sentence_field and sentence_html:
-        note[sentence_field] = sentence_html
+    translation_html = html.escape(str(task.translation or "").strip())
+    if sentence_fields and sentence_html:
+        sentence_parts = _split_context_sentences(sentence_html, len(sentence_fields))
+        translation_parts = _split_context_sentences(translation_html, len(sentence_fields))
+        for index, (sentence_field, sentence_part) in enumerate(
+            zip(sentence_fields, sentence_parts)
+        ):
+            note[sentence_field] = sentence_part
+            for companion in _plain_display_companions(field_names, sentence_field):
+                note[companion] = sentence_part
+            translation_field = _sentence_translation_field(field_names, sentence_field)
+            if translation_field and index < len(translation_parts):
+                note[translation_field] = translation_parts[index]
     elif sentence_html:
         note[solution_field] += "<br><i>%s</i>" % sentence_html
 
@@ -250,8 +264,21 @@ def _audio_field(
     return ""
 
 
-def _example_sentence_field(field_names: Sequence[str], excluded: Sequence[str]) -> str:
+def _example_sentence_fields(
+    field_names: Sequence[str], excluded: Sequence[str]
+) -> List[str]:
     excluded_keys = {name.casefold() for name in excluded}
+    numbered: List[Tuple[int, str]] = []
+    for name in field_names:
+        if name.casefold() in excluded_keys:
+            continue
+        key = _field_label_key(name)
+        match = re.fullmatch(r"(?:examplesentence|sentence|example|context)(\d+)", key)
+        if match:
+            numbered.append((int(match.group(1)), name))
+    if numbered:
+        return [name for _number, name in sorted(numbered)]
+
     for name in field_names:
         key = _field_label_key(name)
         if name.casefold() in excluded_keys:
@@ -275,8 +302,51 @@ def _example_sentence_field(field_names: Sequence[str], excluded: Sequence[str])
                 "文脈",
             )
         ):
-            return name
+            return [name]
+    return []
+
+
+def _plain_display_companions(field_names: Sequence[str], field_name: str) -> List[str]:
+    """Return paired visible/plain fields without guessing unrelated fields."""
+    field_key = _field_label_key(field_name)
+    companion_key = field_key[5:] if field_key.startswith("plain") else "plain" + field_key
+    return [
+        name
+        for name in field_names
+        if name.casefold() != field_name.casefold()
+        and _field_label_key(name) == companion_key
+    ]
+
+
+def _sentence_translation_field(field_names: Sequence[str], sentence_field: str) -> str:
+    base = re.sub(r"^plain\s*", "", sentence_field, flags=re.IGNORECASE).strip()
+    candidates = (
+        "%s Translation" % base,
+        "Translation %s" % base,
+        "Example Sentence Translation",
+        "Sentence Translation",
+        "Example Translation",
+        "Context Translation",
+    )
+    for candidate in candidates:
+        resolved = _resolve_field(field_names, candidate)
+        if resolved:
+            return resolved
     return ""
+
+
+def _split_context_sentences(value: str, limit: int) -> List[str]:
+    text = str(value or "").strip()
+    if not text or limit <= 0:
+        return []
+    parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?\u2026])\s+", text)
+        if part.strip()
+    ]
+    if len(parts) <= limit:
+        return parts
+    return parts[: limit - 1] + [" ".join(parts[limit - 1 :])]
 
 
 def _field_label_key(value: str) -> str:

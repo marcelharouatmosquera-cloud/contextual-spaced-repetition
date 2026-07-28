@@ -555,21 +555,93 @@ function showContextTranslation(span, text, loading = false, canMine = !loading)
       "aria-label",
       "Add Note. Creates a new note using this deck's note type and places its new cards at the front of the New queue."
     );
-    mine.addEventListener("click", () => {
-      window.clearTimeout(contextHideTimer);
-      contextTranslationTooltip.dataset.mining = "true";
-      mine.disabled = true;
-      mine.textContent = "Adding...";
-      pycmd(JSON.stringify({
-        action: "mine_word",
-        word: (span.dataset.word || span.textContent || "").trim(),
-        translation: text
-      }));
-    });
+    mine.addEventListener("click", () => showMineConfirmation(span, text));
     contextTranslationTooltip.appendChild(mine);
   }
   contextTranslationTooltip.classList.toggle("loading", loading);
   contextTranslationTooltip.hidden = false;
+  positionContextTranslation(span);
+}
+
+function showMineConfirmation(span, translatedText) {
+  window.clearTimeout(contextHideTimer);
+  contextTranslationTooltip.dataset.mining = "true";
+  contextTranslationTooltip.classList.remove("loading");
+  contextTranslationTooltip.textContent = "";
+
+  const form = document.createElement("form");
+  form.className = "mine-confirmation";
+
+  const explanation = document.createElement("p");
+  explanation.className = "mine-explanation";
+  explanation.textContent = sentenceTranslation
+    ? "Check the dictionary form. The sentence, its translation, and both card directions will be added automatically."
+    : "Check the dictionary form. The sentence and both card directions will be added; its translation is not available yet.";
+  form.appendChild(explanation);
+
+  const wordLabel = document.createElement("label");
+  wordLabel.textContent = "Word";
+  const wordInput = document.createElement("input");
+  wordInput.className = "mine-input";
+  wordInput.type = "text";
+  wordInput.value = (span.dataset.word || span.textContent || "").trim();
+  wordInput.required = true;
+  wordLabel.appendChild(wordInput);
+  form.appendChild(wordLabel);
+
+  const meaningLabel = document.createElement("label");
+  meaningLabel.textContent = "Meaning";
+  const meaningInput = document.createElement("input");
+  meaningInput.className = "mine-input";
+  meaningInput.type = "text";
+  meaningInput.value = translatedText;
+  meaningInput.required = true;
+  meaningLabel.appendChild(meaningInput);
+  form.appendChild(meaningLabel);
+
+  const actions = document.createElement("div");
+  actions.className = "mine-actions";
+  const create = document.createElement("button");
+  create.type = "submit";
+  create.className = "mine-word mine-create";
+  create.textContent = "Create Note";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "compact-action mine-cancel";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => {
+    delete contextTranslationTooltip.dataset.mining;
+    showContextTranslation(span, translatedText);
+  });
+  actions.append(create, cancel);
+  form.appendChild(actions);
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const word = wordInput.value.trim();
+    const meaning = meaningInput.value.trim();
+    if (!word || !meaning) {
+      return;
+    }
+    create.disabled = true;
+    cancel.disabled = true;
+    create.textContent = "Adding...";
+    pycmd(JSON.stringify({
+      action: "mine_word",
+      word,
+      translation: meaning,
+      sentence_translation: sentenceTranslation
+    }));
+  });
+
+  contextTranslationTooltip.appendChild(form);
+  contextTranslationTooltip.hidden = false;
+  positionContextTranslation(span);
+  wordInput.focus();
+  wordInput.select();
+}
+
+function positionContextTranslation(span) {
   const wordRect = span.getBoundingClientRect();
   const tooltipRect = contextTranslationTooltip.getBoundingClientRect();
   const left = Math.max(8, Math.min(
@@ -630,6 +702,10 @@ window.contextualMineFinished = (success, message) => {
     mine.disabled = Boolean(success);
     mine.textContent = success ? "Added" : "Try Again";
   }
+  const cancel = contextTranslationTooltip.querySelector(".mine-cancel");
+  if (cancel) {
+    cancel.disabled = Boolean(success);
+  }
   const status = document.createElement("div");
   status.className = success ? "mine-status success" : "mine-status error";
   status.textContent = message || (success ? "Added." : "Could not add note.");
@@ -644,7 +720,7 @@ window.contextualMineUndone = (message) => {
   const mine = contextTranslationTooltip.querySelector(".mine-word");
   if (mine) {
     mine.disabled = false;
-    mine.textContent = "Add Note";
+    mine.textContent = mine.classList.contains("mine-create") ? "Create Note" : "Add Note";
   }
   contextTranslationTooltip.querySelectorAll(".mine-status").forEach((node) => node.remove());
   const status = document.createElement("div");
@@ -1345,6 +1421,51 @@ body {
   margin-top: 7px;
   padding: 5px 9px;
   font-size: 12px;
+}
+
+.mine-confirmation {
+  display: grid;
+  gap: 8px;
+  min-width: min(270px, calc(100vw - 40px));
+}
+
+.mine-confirmation label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted) !important;
+  -webkit-text-fill-color: var(--muted) !important;
+  font-size: 11px;
+}
+
+.mine-explanation {
+  margin: 0;
+  color: var(--fg) !important;
+  -webkit-text-fill-color: var(--fg) !important;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.mine-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel) !important;
+  color: var(--fg) !important;
+  -webkit-text-fill-color: var(--fg) !important;
+  font: inherit;
+  font-size: 13px;
+}
+
+.mine-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mine-actions .mine-word,
+.mine-actions .mine-cancel {
+  margin-top: 0;
 }
 
 .mine-status {
