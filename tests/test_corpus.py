@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -310,6 +311,71 @@ class CorpusTests(unittest.TestCase):
             self.assertEqual(saw.direction, "recognition")
             self.assertEqual(task.card_ids_by_key, {"see": [1]})
 
+    def test_one_sentence_never_grades_recall_and_recognition_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(
+                    conn,
+                    "en",
+                    "We review word cards.",
+                    "Wir wiederholen Wortkarten.",
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            recognition = DueCard(
+                card_id=1,
+                target_word="review",
+                lemma="review",
+                word_form="review",
+                direction="recognition",
+            )
+            recall = DueCard(
+                card_id=2,
+                target_word="word",
+                lemma="word",
+                word_form="word",
+                definition="Wort",
+                direction="recall",
+            )
+
+            for expected_direction, recognition_priority, recall_priority in (
+                ("recognition", 200.0, 100.0),
+                ("recall", 100.0, 200.0),
+            ):
+                with self.subTest(direction=expected_direction):
+                    recognition = replace(recognition, priority=recognition_priority)
+                    recall = replace(recall, priority=recall_priority)
+                    task = select_review_task(
+                        db_path,
+                        [recognition, recall],
+                        "en",
+                        set(),
+                        10,
+                        matching_mode="exact_form",
+                    )
+
+                    self.assertIsNotNone(task)
+                    assert task is not None
+                    self.assertEqual(task.task_type, expected_direction)
+                    self.assertEqual(
+                        {item.direction for item in task.target_words},
+                        {expected_direction},
+                    )
+                    expected_card_id = 1 if expected_direction == "recognition" else 2
+                    self.assertEqual(
+                        {
+                            card_id
+                            for card_ids in task.card_ids_by_key.values()
+                            for card_id in card_ids
+                        },
+                        {expected_card_id},
+                    )
+
     def test_recall_without_stored_translation_is_available_for_automatic_translation(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "sentences.db"
@@ -425,8 +491,21 @@ class CorpusTests(unittest.TestCase):
                 conn.close()
 
             due = [
-                DueCard(card_id=1, target_word="missing", lemma="missing", priority=100.0),
-                DueCard(card_id=2, target_word="word", lemma="word", priority=1.0),
+                DueCard(
+                    card_id=1,
+                    target_word="missing",
+                    lemma="missing",
+                    definition="fehlt",
+                    priority=100.0,
+                    direction="recall",
+                ),
+                DueCard(
+                    card_id=2,
+                    target_word="word",
+                    lemma="word",
+                    priority=1.0,
+                    direction="recognition",
+                ),
             ]
 
             task = select_review_task(db_path, due, "en", set(), 10, matching_mode="lemma_family")
@@ -434,6 +513,7 @@ class CorpusTests(unittest.TestCase):
             self.assertIsNotNone(task)
             assert task is not None
             self.assertEqual(task.full_text, "Learn word cards.")
+            self.assertEqual(task.task_type, "recognition")
 
     def test_select_review_task_prefers_a_due_learning_step(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

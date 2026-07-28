@@ -292,15 +292,17 @@ def select_review_task(
 ) -> Optional[ReviewTask]:
     conn = open_review_database(db_path)
     try:
-        due_by_key = _due_by_key(conn, due_cards, matching_mode)
-        if not due_by_key:
-            return None
-        expansions = _query_expansions(conn, due_by_key, matching_mode)
-        if not expansions:
+        all_due_by_key = _due_by_key(conn, due_cards, matching_mode)
+        if not all_due_by_key:
             return None
         excluded_anchor_keys = set(_excluded_anchor_keys or ())
-        anchor_key = _greedy_anchor_key(due_by_key, excluded_anchor_keys)
+        anchor_key = _greedy_anchor_key(all_due_by_key, excluded_anchor_keys)
         if not anchor_key:
+            return None
+        anchor_direction = _due_card_direction(all_due_by_key[anchor_key][0])
+        due_by_key = _due_keys_for_direction(all_due_by_key, anchor_direction)
+        expansions = _query_expansions(conn, due_by_key, matching_mode)
+        if not expansions:
             return None
         anchor_expansions = [
             expansion for expansion in expansions if expansion.base_key == anchor_key
@@ -364,7 +366,7 @@ def select_review_task(
         )
 
     if not candidates:
-        remaining_anchor_keys = set(due_by_key) - excluded_anchor_keys - {anchor_key}
+        remaining_anchor_keys = set(all_due_by_key) - excluded_anchor_keys - {anchor_key}
         if not remaining_anchor_keys:
             return None
         return select_review_task(
@@ -903,6 +905,18 @@ def _prefer_recognition_for_mixed_keys(
         else:
             resolved[key] = list(cards)
     return resolved
+
+
+def _due_keys_for_direction(
+    due_by_key: Dict[str, List[DueCard]], direction: str
+) -> Dict[str, List[DueCard]]:
+    """Keep one review direction per sentence so recall answers stay hidden."""
+    selected: Dict[str, List[DueCard]] = {}
+    for key, cards in due_by_key.items():
+        matching = [card for card in cards if _due_card_direction(card) == direction]
+        if matching:
+            selected[key] = matching
+    return selected
 
 
 def _due_card_direction(card: DueCard) -> str:
