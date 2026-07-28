@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import html
 import re
-import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from .config import ContextConfig
 from .debug_log import append_debug_log
@@ -19,9 +18,6 @@ from .normalizer import (
 )
 from .template_fields import visible_question_field_names
 from .types import DueCard, ReviewTask, SolutionFieldValue
-
-Answerer = Callable[[Any, int], None]
-
 
 class DueCardCollection(list):
     """Limited selection rows plus the full set of eligible cards due today."""
@@ -44,24 +40,7 @@ class AnswerSummary:
     answered_card_ids: List[int]
     unknown_card_ids: List[int]
     known_card_ids: List[int]
-    undo_snapshot: Optional["BatchUndoSnapshot"] = None
     completed_card_ids: Optional[List[int]] = None
-
-
-@dataclass(frozen=True)
-class BatchUndoSnapshot:
-    card_rows: Dict[int, Dict[str, Any]]
-    revlog_ids: List[int]
-
-
-class CardAnswerError(RuntimeError):
-    def __init__(self, message: str, answered_card_ids: Optional[List[int]] = None) -> None:
-        super().__init__(message)
-        self.answered_card_ids = answered_card_ids or []
-
-
-class GradeNowUnavailable(RuntimeError):
-    """Raised when this Anki version lacks the arbitrary-card grading API."""
 
 
 def build_due_search_query(mw: Any, config: ContextConfig) -> str:
@@ -480,25 +459,13 @@ def answer_review_task(
     )
 
     try:
-        summary = _answer_with_anki_grade_now(mw, answers)
-        summary = _with_completed_card_ids(mw, summary)
+        summary = _with_completed_card_ids(
+            mw,
+            _answer_with_anki_grade_now(mw, answers),
+        )
         append_debug_log(
             "answer_review_task_success",
             scheduler="anki_grade_now",
-            sentence_id=task.sentence_id,
-            summary=_debug_answer_summary(summary),
-            after=_debug_card_states(mw, answer_card_ids),
-        )
-        return summary
-    except GradeNowUnavailable:
-        # Kept for older Anki versions and lightweight test doubles. Unlike the
-        # removed contextual fallback, this still delegates every transition to
-        # Anki's scheduler.
-        summary = _answer_with_anki_scheduler(mw, answers)
-        summary = _with_completed_card_ids(mw, summary)
-        append_debug_log(
-            "answer_review_task_success",
-            scheduler="native_legacy",
             sentence_id=task.sentence_id,
             summary=_debug_answer_summary(summary),
             after=_debug_card_states(mw, answer_card_ids),
@@ -524,7 +491,9 @@ def _answer_with_anki_grade_now(mw: Any, answers: Sequence[CardAnswer]) -> Answe
     merge_undo = getattr(col, "merge_undo_entries", None)
     undo = getattr(col, "undo", None)
     if not all(callable(item) for item in (grade_now, add_undo, merge_undo, undo)):
-        raise GradeNowUnavailable("Anki's Grade Now API is unavailable.")
+        raise RuntimeError(
+            "Anki's native grade_now batch API is unavailable. Run Contextual Review Diagnostics."
+        )
 
     cards = _load_cards_for_answers(mw, answers)
     sibling_card_ids = _sibling_card_ids_to_bury(mw, answers, cards)
@@ -650,36 +619,6 @@ def _sibling_bury_mode_for_card(col: Any, card: Any) -> Tuple[bool, bool, bool]:
     )
 
 
-def _answer_with_anki_scheduler(mw: Any, answers: Sequence[CardAnswer]) -> AnswerSummary:
-    answerer = _scheduler_answerer(mw)
-    cards = _load_cards_for_answers(mw, answers)
-
-    _checkpoint(mw, "Contextual Review")
-
-    answered_card_ids: List[int] = []
-    try:
-        for answer in answers:
-            card = cards[answer.card_id]
-            _prepare_card_timer(card)
-            answerer(card, answer.ease)
-            answered_card_ids.append(answer.card_id)
-    except Exception as exc:
-        if answered_card_ids:
-            _flush_collection(mw)
-        raise CardAnswerError(
-            "Could not answer card %s after answering %s card(s): %s"
-            % (answers[len(answered_card_ids)].card_id, len(answered_card_ids), exc),
-            answered_card_ids,
-        ) from exc
-
-    _flush_collection(mw)
-    return AnswerSummary(
-        answered_card_ids=answered_card_ids,
-        unknown_card_ids=[answer.card_id for answer in answers if answer.is_unknown],
-        known_card_ids=[answer.card_id for answer in answers if not answer.is_unknown],
-    )
-
-
 def build_answer_plan(
     task: ReviewTask,
     unknown_keys: Iterable[str],
@@ -719,64 +658,6 @@ def build_answer_plan(
     return answers
 
 
-def restore_answer_snapshot(mw: Any, snapshot: Optional[BatchUndoSnapshot]) -> None:
-    if snapshot is None:
-        return
-    if _collection_db(mw) is None:
-        raise RuntimeError("Cannot restore contextual review: collection database is unavailable.")
-    _restore_snapshot_rows(mw, snapshot)
-
-
-def _answer_with_contextual_scheduler(
-    mw: Any, answers: Sequence[CardAnswer]
-) -> Optional[AnswerSummary]:
-    db = _collection_db(mw)
-    if db is None:
-        return None
-
-    card_ids = [answer.card_id for answer in answers]
-    card_rows = _read_card_rows(db, card_ids)
-    missing = [card_id for card_id in card_ids if card_id not in card_rows]
-    if missing:
-        raise RuntimeError("Could not load card row(s): %s" % ", ".join(str(card_id) for card_id in missing))
-    filtered = [card_id for card_id, row in card_rows.items() if int(row.get("odid") or 0)]
-    if filtered:
-        raise RuntimeError(
-            "Contextual Review cannot manually schedule filtered-deck card(s): %s. "
-            "Empty or rebuild the filtered deck, then review the source deck."
-            % ", ".join(str(card_id) for card_id in sorted(filtered))
-        )
-
-    snapshot = BatchUndoSnapshot(
-        card_rows={card_id: dict(card_rows[card_id]) for card_id in card_ids},
-        revlog_ids=[],
-    )
-    now = int(time.time())
-    today = int(getattr(getattr(mw.col, "sched", None), "today", 0) or 0)
-    usn = _collection_usn(mw)
-
-    try:
-        for index, answer in enumerate(answers):
-            old_row = card_rows[answer.card_id]
-            revlog_id = _next_revlog_id(db, now, index)
-            new_row, revlog_row = _scheduled_card_update(old_row, answer, today, now, usn, revlog_id)
-            _write_card_row(db, new_row)
-            _insert_revlog_row(db, revlog_row)
-            snapshot.revlog_ids.append(int(revlog_row["id"]))
-
-        _commit_collection(mw)
-        _flush_collection(mw)
-    except Exception as exc:
-        _restore_snapshot_rows(mw, snapshot)
-        raise RuntimeError("Contextual scheduler failed and restored the previous card state: %s" % exc) from exc
-    return AnswerSummary(
-        answered_card_ids=[answer.card_id for answer in answers],
-        unknown_card_ids=[answer.card_id for answer in answers if answer.is_unknown],
-        known_card_ids=[answer.card_id for answer in answers if not answer.is_unknown],
-        undo_snapshot=snapshot,
-)
-
-
 def _increment_skip(skipped: Dict[str, int], reason: str) -> None:
     skipped[reason] = skipped.get(reason, 0) + 1
 
@@ -799,7 +680,6 @@ def _debug_answer_summary(summary: AnswerSummary) -> Dict[str, Any]:
         "unknown_card_ids": summary.unknown_card_ids,
         "known_card_ids": summary.known_card_ids,
         "completed_card_ids": list(summary.completed_card_ids or ()),
-        "has_undo_snapshot": summary.undo_snapshot is not None,
     }
 
 
@@ -821,7 +701,6 @@ def _with_completed_card_ids(mw: Any, summary: AnswerSummary) -> AnswerSummary:
         answered_card_ids=list(summary.answered_card_ids),
         unknown_card_ids=list(summary.unknown_card_ids),
         known_card_ids=list(summary.known_card_ids),
-        undo_snapshot=summary.undo_snapshot,
         completed_card_ids=completed_card_ids,
     )
 
@@ -889,82 +768,6 @@ def _debug_card_states(mw: Any, card_ids: Sequence[int]) -> List[Dict[str, Any]]
     return states
 
 
-def _restore_snapshot_rows(mw: Any, snapshot: BatchUndoSnapshot) -> None:
-    db = _collection_db(mw)
-    if db is None:
-        return
-    for revlog_id in snapshot.revlog_ids:
-        _db_execute(db, "DELETE FROM revlog WHERE id = ?", (revlog_id,))
-    for row in snapshot.card_rows.values():
-        _write_card_row(db, row)
-    _commit_collection(mw)
-    _flush_collection(mw)
-
-
-def _scheduled_card_update(
-    old_row: Dict[str, Any],
-    answer: CardAnswer,
-    today: int,
-    now: int,
-    usn: int,
-    revlog_id: int,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    old_type = int(old_row.get("type") or 0)
-    old_queue = int(old_row.get("queue") or 0)
-    old_ivl = int(old_row.get("ivl") or 0)
-    old_factor = int(old_row.get("factor") or 2500)
-    old_lapses = int(old_row.get("lapses") or 0)
-    old_reps = int(old_row.get("reps") or 0)
-
-    new_row = dict(old_row)
-    new_row["mod"] = now
-    new_row["usn"] = usn
-    new_row["reps"] = old_reps + 1
-
-    if answer.is_unknown:
-        new_factor = max(1300, old_factor - 200)
-        new_ivl = 0
-        new_due = now
-        new_lapses = old_lapses + (1 if old_type == 2 or old_queue == 2 else 0)
-        revlog_type = 2 if old_type == 2 or old_queue == 2 else 0
-        new_type = 3 if old_type == 2 or old_queue == 2 else 1
-        new_queue = 1
-        new_left = 1001
-    else:
-        new_factor = old_factor
-        base_ivl = max(1, old_ivl)
-        growth = max(1, round(base_ivl * max(1.3, old_factor / 1000.0)))
-        new_ivl = max(base_ivl + 1, growth)
-        new_due = today + new_ivl
-        new_lapses = old_lapses
-        revlog_type = 1 if old_type == 2 or old_queue == 2 else 0
-        new_type = 2
-        new_queue = 2
-        new_left = 0
-
-    new_row["type"] = new_type
-    new_row["queue"] = new_queue
-    new_row["due"] = new_due
-    new_row["ivl"] = new_ivl
-    new_row["factor"] = new_factor
-    new_row["lapses"] = new_lapses
-    new_row["left"] = new_left
-    new_row["odue"] = 0
-    new_row["odid"] = 0
-
-    return new_row, {
-        "id": revlog_id,
-        "cid": int(answer.card_id),
-        "usn": usn,
-        "ease": int(answer.ease),
-        "ivl": int(new_ivl),
-        "lastIvl": int(old_ivl),
-        "factor": int(new_factor),
-        "time": 0,
-        "type": revlog_type,
-    }
-
-
 CARD_COLUMNS = (
     "id",
     "nid",
@@ -991,16 +794,6 @@ def _collection_db(mw: Any) -> Any:
     return getattr(getattr(mw, "col", None), "db", None)
 
 
-def _collection_usn(mw: Any) -> int:
-    usn = getattr(getattr(mw, "col", None), "usn", None)
-    if callable(usn):
-        try:
-            return int(usn())
-        except Exception:
-            pass
-    return -1
-
-
 def _read_card_rows(db: Any, card_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
     rows: Dict[int, Dict[str, Any]] = {}
     unique_card_ids = _unique_ids(card_ids)
@@ -1015,22 +808,6 @@ def _read_card_rows(db: Any, card_ids: Sequence[int]) -> Dict[int, Dict[str, Any
         values = dict(row) if hasattr(row, "keys") else dict(zip(CARD_COLUMNS, row))
         rows[int(values["id"])] = values
     return rows
-
-
-def _write_card_row(db: Any, row: Dict[str, Any]) -> None:
-    assignments = ", ".join("%s = ?" % column for column in CARD_COLUMNS if column != "id")
-    params = tuple(row[column] for column in CARD_COLUMNS if column != "id") + (row["id"],)
-    _db_execute(db, "UPDATE cards SET %s WHERE id = ?" % assignments, params)
-
-
-def _insert_revlog_row(db: Any, row: Dict[str, Any]) -> None:
-    columns = ("id", "cid", "usn", "ease", "ivl", "lastIvl", "factor", "time", "type")
-    placeholders = ", ".join("?" for _ in columns)
-    _db_execute(
-        db,
-        "INSERT INTO revlog(%s) VALUES (%s)" % (", ".join(columns), placeholders),
-        tuple(row[column] for column in columns),
-    )
 
 
 def _db_first(db: Any, sql: str, params: Sequence[Any]) -> Any:
@@ -1049,45 +826,6 @@ def _db_all(db: Any, sql: str, params: Sequence[Any]) -> Sequence[Any]:
     return cursor.fetchall()
 
 
-def _db_execute(db: Any, sql: str, params: Sequence[Any] = ()) -> Any:
-    if isinstance(db, sqlite3.Connection):
-        return db.execute(sql, tuple(params))
-    try:
-        return db.execute(sql, *params)
-    except (TypeError, ValueError):
-        return db.execute(sql, tuple(params))
-
-
-def _commit_collection(mw: Any) -> None:
-    col = getattr(mw, "col", None)
-    save = getattr(col, "save", None)
-    if callable(save):
-        try:
-            save()
-            return
-        except Exception:
-            pass
-    commit = getattr(_collection_db(mw), "commit", None)
-    if callable(commit):
-        commit()
-
-
-def _next_revlog_id(db: Any, now: int, offset: int) -> int:
-    revlog_id = now * 1000 + offset
-    while _db_first(db, "SELECT id FROM revlog WHERE id = ?", (revlog_id,)) is not None:
-        revlog_id += 1
-    return revlog_id
-
-
-def _scheduler_answerer(mw: Any) -> Answerer:
-    scheduler = mw.col.sched
-    if hasattr(scheduler, "answerCard"):
-        return scheduler.answerCard
-    if hasattr(scheduler, "answer_card"):
-        return scheduler.answer_card
-    raise RuntimeError("This Anki scheduler does not expose answerCard().")
-
-
 def _load_cards_for_answers(mw: Any, answers: Sequence[CardAnswer]) -> Dict[int, Any]:
     cards: Dict[int, Any] = {}
     missing: List[int] = []
@@ -1099,33 +837,6 @@ def _load_cards_for_answers(mw: Any, answers: Sequence[CardAnswer]) -> Dict[int,
     if missing:
         raise RuntimeError("Could not load card(s): %s" % ", ".join(str(card_id) for card_id in missing))
     return cards
-
-
-def _checkpoint(mw: Any, name: str) -> None:
-    checkpoint = getattr(mw, "checkpoint", None)
-    if callable(checkpoint):
-        checkpoint(name)
-        return
-    raise RuntimeError("This Anki build does not expose mw.checkpoint().")
-
-
-def _prepare_card_timer(card: Any) -> None:
-    for method_name in ("start_timer", "startTimer"):
-        method = getattr(card, method_name, None)
-        if callable(method):
-            try:
-                method()
-                return
-            except Exception:
-                pass
-
-    now = time.time()
-    for attr in ("timer_started", "timerStarted"):
-        try:
-            if getattr(card, attr, None) is None:
-                setattr(card, attr, now)
-        except Exception:
-            pass
 
 
 def _flush_collection(mw: Any) -> None:

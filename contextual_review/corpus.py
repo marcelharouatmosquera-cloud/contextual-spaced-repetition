@@ -56,9 +56,15 @@ CREATE TABLE IF NOT EXISTS corpus_meta (
 );
 """
 
+CJK_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_cjk
+USING FTS5(text, tokenize='trigram');
+"""
+
 WORD_FORMS_BACKFILL_KEY = "word_forms_backfill_v1"
 SENTENCE_FORMS_BACKFILL_KEY = "sentence_forms_backfill_v1"
-SENTENCE_NGRAMS_BACKFILL_KEY = "sentence_ngrams_backfill_v1"
+SENTENCE_NGRAMS_BACKFILL_KEY = "sentence_ngrams_backfill_v2"
+CJK_FTS_BACKFILL_KEY = "fts_cjk_backfill_v1"
 REVIEW_QUERY_TIMEOUT_SECONDS = 15.0
 
 
@@ -118,6 +124,12 @@ def initialize_database(path: Path) -> None:
         conn.close()
 
 
+def migrate_database(path: Path) -> None:
+    """Apply corpus schema migrations to an existing writable database."""
+    conn = connect_database(path)
+    conn.close()
+
+
 def sentence_count_for_language(path: Path, language: str) -> int:
     """Return the number of stored sentences matching a language profile."""
     resolved = Path(path)
@@ -165,6 +177,11 @@ def delete_sentences_for_language(path: Path, language: str, limit: int = 0) -> 
                 "DELETE FROM sentence_ngrams WHERE sentence_id IN (%s)" % marks,
                 tuple(batch),
             )
+            if _table_exists(conn, "fts_cjk"):
+                conn.execute(
+                    "DELETE FROM fts_cjk WHERE rowid IN (%s)" % marks,
+                    tuple(batch),
+                )
             conn.execute("DELETE FROM sentences WHERE id IN (%s)" % marks, tuple(batch))
         conn.commit()
         return len(sentence_ids)
@@ -174,6 +191,7 @@ def delete_sentences_for_language(path: Path, language: str, limit: int = 0) -> 
 
 def ensure_database_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    cjk_fts_available = _ensure_cjk_fts_schema(conn)
     sentence_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(sentences)").fetchall()
     }
@@ -188,6 +206,8 @@ def ensure_database_schema(conn: sqlite3.Connection) -> None:
     _backfill_word_forms_from_word_map(conn)
     _backfill_sentence_forms(conn)
     _backfill_sentence_ngrams(conn)
+    if cjk_fts_available:
+        _backfill_cjk_fts(conn)
 
 
 def insert_sentence(
@@ -231,6 +251,7 @@ def insert_sentence(
         (sentence_id, " ".join(forms)),
     )
     _insert_sentence_ngrams(conn, sentence_id, full_text)
+    _insert_cjk_fts(conn, sentence_id, full_text)
     if word_map:
         upsert_word_forms(conn, word_map)
     return sentence_id
@@ -583,17 +604,31 @@ def _substring_candidate_rows(
     if not forms:
         return []
 
-    if _table_exists(conn, "sentence_ngrams"):
-        indexed_forms = [form for form in forms if len(form) >= 2]
-        short_forms = [form for form in forms if len(form) < 2]
-        rows = _indexed_substring_candidate_rows(
+    rows: List[sqlite3.Row] = []
+    long_forms = [form for form in forms if len(form) >= 3]
+    if long_forms and _table_exists(conn, "fts_cjk"):
+        rows.extend(_fts_cjk_candidate_rows(conn, long_forms, languages, limit))
+
+    seen_ids = {int(row["id"]) for row in rows}
+    remaining_forms = [form for form in forms if len(form) < 3]
+    if not rows and not _table_exists(conn, "fts_cjk"):
+        remaining_forms = forms
+
+    if remaining_forms and _table_exists(conn, "sentence_ngrams"):
+        indexed_forms = [form for form in remaining_forms if len(form) >= 2]
+        short_forms = [form for form in remaining_forms if len(form) < 2]
+        indexed_rows = _indexed_substring_candidate_rows(
             conn,
             indexed_forms,
             languages,
             limit,
         )
+        for row in indexed_rows:
+            sentence_id = int(row["id"])
+            if sentence_id not in seen_ids:
+                seen_ids.add(sentence_id)
+                rows.append(row)
         if short_forms and len(rows) < limit:
-            seen_ids = {int(row["id"]) for row in rows}
             for row in _scan_substring_candidate_rows(
                 conn,
                 short_forms,
@@ -607,7 +642,43 @@ def _substring_candidate_rows(
                 rows.append(row)
         return rows[:limit]
 
-    return _scan_substring_candidate_rows(conn, forms, languages, limit)
+    if remaining_forms and len(rows) < limit:
+        for row in _scan_substring_candidate_rows(conn, remaining_forms, languages, limit):
+            sentence_id = int(row["id"])
+            if sentence_id not in seen_ids:
+                seen_ids.add(sentence_id)
+                rows.append(row)
+    return rows[:limit]
+
+
+def _fts_cjk_candidate_rows(
+    conn: sqlite3.Connection,
+    forms: Sequence[str],
+    languages: Sequence[str],
+    limit: int,
+) -> List[sqlite3.Row]:
+    """Retrieve unsegmented-text candidates from the FTS5 trigram index."""
+    if not forms:
+        return []
+    language_placeholders = ", ".join("?" for _ in range(max(1, len(languages))))
+    match_query = " OR ".join('"%s"' % form.replace('"', '""') for form in forms)
+    sql = """
+        SELECT s.id, s.language, s.full_text, s.translation, s.word_count,
+               COALESCE(sf.word_form_list, '') AS key_list,
+               bm25(fts_cjk) AS bm25_score,
+               1 AS substring_match_count
+        FROM fts_cjk
+        JOIN sentences s ON s.id = fts_cjk.rowid
+        LEFT JOIN sentence_forms sf ON sf.sentence_id = s.id
+        WHERE fts_cjk MATCH ?
+          AND s.language IN (%s)
+        ORDER BY bm25_score, s.word_count, s.id
+        LIMIT ?
+    """ % language_placeholders
+    return conn.execute(
+        sql,
+        (match_query, *languages, max(limit, 20)),
+    ).fetchall()
 
 
 def _indexed_substring_candidate_rows(
@@ -1140,6 +1211,47 @@ def _backfill_sentence_ngrams(conn: sqlite3.Connection) -> None:
         _mark_corpus_migration_completed(conn, SENTENCE_NGRAMS_BACKFILL_KEY)
     except sqlite3.Error:
         return
+
+
+def _ensure_cjk_fts_schema(conn: sqlite3.Connection) -> bool:
+    """Create the trigram index when the bundled SQLite supports it."""
+    try:
+        conn.executescript(CJK_FTS_SCHEMA)
+        return True
+    except sqlite3.Error:
+        # The manual 2/3-character index remains a compatibility fallback for
+        # SQLite builds compiled without FTS5's trigram tokenizer.
+        return False
+
+
+def _backfill_cjk_fts(conn: sqlite3.Connection) -> None:
+    if _corpus_migration_completed(conn, CJK_FTS_BACKFILL_KEY):
+        indexed_count = int(conn.execute("SELECT COUNT(*) FROM fts_cjk").fetchone()[0])
+        expected_count = int(
+            conn.execute("SELECT COUNT(DISTINCT sentence_id) FROM sentence_ngrams").fetchone()[0]
+        )
+        if indexed_count >= expected_count:
+            return
+    try:
+        cursor = conn.execute("SELECT id, full_text FROM sentences ORDER BY id")
+        while True:
+            rows = cursor.fetchmany(500)
+            if not rows:
+                break
+            for row in rows:
+                _insert_cjk_fts(conn, int(row["id"]), str(row["full_text"]))
+        _mark_corpus_migration_completed(conn, CJK_FTS_BACKFILL_KEY)
+    except sqlite3.Error:
+        return
+
+
+def _insert_cjk_fts(conn: sqlite3.Connection, sentence_id: int, full_text: str) -> None:
+    if not contains_unsegmented_script(full_text) or not _table_exists(conn, "fts_cjk"):
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO fts_cjk(rowid, text) VALUES (?, ?)",
+        (int(sentence_id), full_text),
+    )
 
 
 def _insert_sentence_ngrams(

@@ -6,13 +6,14 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import quote, unquote, urlsplit
 
-from .anki_bridge import BatchUndoSnapshot, answer_review_task, collect_due_cards, restore_answer_snapshot
+from .anki_bridge import answer_review_task, collect_due_cards
 from .config import addon_user_root, load_config, resolve_database_path
-from .corpus import select_review_task
+from .corpus import migrate_database, select_review_task
 from .debug_log import append_debug_log
+from .normalizer import is_unsegmented_language
 from .types import DueCard, ReviewTask
 from .web import render_message_html, render_task_html
 
@@ -28,7 +29,7 @@ class AnkiUndoMarker:
     label: str
 
 
-ReviewUndoHandle = Optional[Union[BatchUndoSnapshot, AnkiUndoMarker]]
+ReviewUndoHandle = Optional[AnkiUndoMarker]
 
 
 def open_contextual_review_dialog(mw: Any, addon_name: str) -> "ContextualReviewDialog":  # pragma: no cover
@@ -93,6 +94,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._started = False
         self._selection_generation = 0
         self._due_cards_cache: Optional[Tuple[DueCard, ...]] = None
+        self._database_migration_pending = True
 
         self.web = AnkiWebView()
         self.web.set_bridge_command(self._on_bridge_command, self)
@@ -267,9 +269,20 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         due_cards = tuple(due_cards)
         generation = getattr(self, "_selection_generation", 0) + 1
         self._selection_generation = generation
+        migrate_before_selection = (
+            getattr(self, "_database_migration_pending", True)
+            and is_unsegmented_language(self.config.language)
+        )
+        self._database_migration_pending = False
 
         def select_task() -> Optional[ReviewTask]:
             selection_started = time.perf_counter()
+            if migrate_before_selection:
+                try:
+                    migrate_database(self.db_path)
+                except Exception:
+                    self._database_migration_pending = True
+                    raise
             avoid_sentence_ids = shown_sentence_ids | recent_sentence_ids
             append_debug_log(
                 "review_task_selection_start",
@@ -492,9 +505,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             # Compatibility for older bridges and lightweight test doubles.
             completed_card_ids = summary.known_card_ids
         self.answered_card_ids.update(completed_card_ids)
-        undo_handle: ReviewUndoHandle = summary.undo_snapshot
-        if undo_handle is None:
-            undo_handle = _capture_anki_undo_marker(self.mw)
+        undo_handle: ReviewUndoHandle = _capture_anki_undo_marker(self.mw)
         self.review_history.append(
             (self.active_task, list(summary.answered_card_ids), undo_handle)
         )
@@ -534,9 +545,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         interrupted_task = self.active_task
         task, answered_card_ids, undo_handle = self.review_history.pop()
         try:
-            if isinstance(undo_handle, BatchUndoSnapshot):
-                restore_answer_snapshot(self.mw, undo_handle)
-            elif isinstance(undo_handle, AnkiUndoMarker):
+            if isinstance(undo_handle, AnkiUndoMarker):
                 _undo_marked_anki_operation(self.mw, undo_handle)
             else:
                 _undo_last_anki_operation(self.mw)

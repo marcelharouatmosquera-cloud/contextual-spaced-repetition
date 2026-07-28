@@ -299,7 +299,6 @@ class ReviewerBridgeTests(unittest.TestCase):
                 unknown_card_ids=[10],
                 known_card_ids=[20],
                 completed_card_ids=[20],
-                undo_snapshot=None,
             )
 
             dialog._submit_answer(["review"])
@@ -328,7 +327,6 @@ class ReviewerBridgeTests(unittest.TestCase):
                 unknown_card_ids=[],
                 known_card_ids=[10],
                 completed_card_ids=[],
-                undo_snapshot=None,
             )
             dialog._submit_answer([])
         finally:
@@ -432,7 +430,6 @@ class ReviewerBridgeTests(unittest.TestCase):
                 answered_card_ids=[10],
                 unknown_card_ids=[],
                 known_card_ids=[10],
-                undo_snapshot=None,
             )
             dialog._submit_answer([])
         finally:
@@ -688,6 +685,45 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.select_review_task = original_select
 
         self.assertEqual(len(collect_calls), 1)
+
+    def test_cjk_database_migration_runs_once_before_first_selection(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.db_path = SimpleNamespace(exists=lambda: True)
+        dialog.config = normalize_config({"language": "ko"})
+        dialog.shown_sentence_ids = set()
+        dialog.recent_sentence_ids = set()
+        dialog.answered_card_ids = set()
+        dialog.active_task = None
+        dialog._loading = False
+        dialog._due_cards_cache = None
+        dialog._selection_generation = 0
+        dialog._database_migration_pending = True
+        dialog._dark_mode = lambda: False
+        dialog._set_html = lambda html: None
+        dialog._mark_sentence_shown = lambda sentence_id: None
+        dialog.mw = object()
+        task = ReviewTask(1, "ko", "문맥을 복습한다.", None, [], {"복습한다": [7]})
+        migration_calls = []
+
+        original_collect = reviewer.collect_due_cards
+        original_select = reviewer.select_review_task
+        original_migrate = reviewer.migrate_database
+        try:
+            reviewer.collect_due_cards = lambda *args, **kwargs: [
+                DueCard(card_id=7, target_word="복습한다", lemma="복습한다")
+            ]
+            reviewer.select_review_task = lambda *args, **kwargs: task
+            reviewer.migrate_database = lambda path: migration_calls.append(path)
+
+            dialog._load_next_task()
+            dialog.active_task = None
+            dialog._load_next_task()
+        finally:
+            reviewer.collect_due_cards = original_collect
+            reviewer.select_review_task = original_select
+            reviewer.migrate_database = original_migrate
+
+        self.assertEqual(migration_calls, [dialog.db_path])
 
     def test_fresh_due_search_adds_newly_eligible_cards_to_lesson_goal(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)

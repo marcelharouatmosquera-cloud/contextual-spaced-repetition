@@ -310,3 +310,7 @@ The packager validates required runtime files, rebuilds
 the `user_files/` placeholder, and writes `dist/contextual_review_addon.ankiaddon`.
 
 Before publishing, walk through [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+
+The native-API-only blueprint for the proposed unknown-word card creator is in
+[docs/SMART_CONTEXT_CARD_PLAN.md](docs/SMART_CONTEXT_CARD_PLAN.md). It is a
+future plan, not an implemented feature.

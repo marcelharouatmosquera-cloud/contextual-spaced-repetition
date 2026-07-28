@@ -81,25 +81,25 @@ def run_smoke_review_loop() -> Dict[str, Any]:
         summary = answer_review_task(mw, task, ["review"], config)
 
         expected_answers = [(101, 1), (102, 3)]
-        if mw.col.sched.answers != expected_answers:
-            raise AssertionError("Expected %s, got %s" % (expected_answers, mw.col.sched.answers))
+        if mw.col.answers != expected_answers:
+            raise AssertionError("Expected %s, got %s" % (expected_answers, mw.col.answers))
         if summary.answered_card_ids != [101, 102]:
             raise AssertionError("Unexpected answer summary: %s" % summary)
         if "unknown_keys" not in html or "Show Solution" not in html:
             raise AssertionError("Rendered review HTML is missing bridge payload or controls")
-        if mw.checkpoints != ["Contextual Review"]:
-            raise AssertionError("Expected one undo checkpoint, got %s" % mw.checkpoints)
+        if mw.col.undo_names != ["Contextual Review"]:
+            raise AssertionError("Expected one native undo entry, got %s" % mw.col.undo_names)
         if not mw.col.updated or not mw.reset_called:
             raise AssertionError("Collection update/reset hooks were not called")
 
         return {
             "sentence": task.full_text,
             "due_keys": sorted(card.match_key for card in due_cards),
-            "answers": mw.col.sched.answers,
+            "answers": mw.col.answers,
             "answered_card_ids": summary.answered_card_ids,
             "unknown_card_ids": summary.unknown_card_ids,
             "known_card_ids": summary.known_card_ids,
-            "checkpoint_count": len(mw.checkpoints),
+            "undo_entry_count": len(mw.col.undo_names),
             "html_length": len(html),
         }
 
@@ -119,13 +119,23 @@ def _build_smoke_db(db_path: Path) -> None:
 class FakeScheduler:
     today = 100
 
-    def __init__(self) -> None:
-        self.answers: List[tuple[int, int]] = []
 
-    def answerCard(self, card: "FakeCard", ease: int) -> None:
-        if card.timer_started is None:
-            raise RuntimeError("card timer was not started")
-        self.answers.append((card.id, ease))
+class FakeBackend:
+    def __init__(self, collection: "FakeCollection") -> None:
+        self.collection = collection
+
+    def grade_now(self, *, card_ids, rating: int) -> None:
+        for card_id in card_ids:
+            card = self.collection.cards[int(card_id)]
+            self.collection.answers.append((card.id, int(rating) + 1))
+            if rating == 0:
+                card.queue = 1
+                card.type = 3
+                card.due = 1_800_000_000
+            else:
+                card.queue = 2
+                card.type = 2
+                card.due = self.collection.sched.today + 5
 
 
 class FakeCollection:
@@ -133,6 +143,10 @@ class FakeCollection:
         self.sched = FakeScheduler()
         self.decks = FakeDecks()
         self.cards = {card.id: card for card in cards}
+        self._backend = FakeBackend(self)
+        self.answers: List[tuple[int, int]] = []
+        self.undo_names: List[str] = []
+        self.merged_entries: List[int] = []
         self.updated = False
 
     def find_cards(self, query: str) -> List[int]:
@@ -145,6 +159,16 @@ class FakeCollection:
 
     def update(self) -> None:
         self.updated = True
+
+    def add_custom_undo_entry(self, name: str) -> int:
+        self.undo_names.append(name)
+        return 42
+
+    def merge_undo_entries(self, target: int) -> None:
+        self.merged_entries.append(target)
+
+    def undo(self) -> None:
+        pass
 
 
 class FakeDecks:
@@ -195,11 +219,7 @@ class FakeCard:
 class FakeMw:
     def __init__(self, cards: Sequence[FakeCard]) -> None:
         self.col = FakeCollection(cards)
-        self.checkpoints: List[str] = []
         self.reset_called = False
-
-    def checkpoint(self, name: str) -> None:
-        self.checkpoints.append(name)
 
     def reset(self) -> None:
         self.reset_called = True

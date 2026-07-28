@@ -37,7 +37,7 @@ EN_IRREGULARS = {
     "written": "write",
 }
 
-UNSEGMENTED_LANGUAGE_CODES = {"ja", "zh"}
+UNSEGMENTED_LANGUAGE_CODES = {"ja", "ko", "zh"}
 
 @dataclass(frozen=True)
 class WordToken:
@@ -167,6 +167,9 @@ def _is_cjk_or_kana(char: str) -> bool:
         0x3040 <= code <= 0x30FF
         or 0x3400 <= code <= 0x4DBF
         or 0x4E00 <= code <= 0x9FFF
+        or 0x1100 <= code <= 0x11FF
+        or 0x3130 <= code <= 0x318F
+        or 0xAC00 <= code <= 0xD7AF
         or 0xF900 <= code <= 0xFAFF
     )
 

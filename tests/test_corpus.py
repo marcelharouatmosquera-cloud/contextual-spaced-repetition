@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from contextual_review.corpus import (
+    CJK_FTS_BACKFILL_KEY,
     _candidate_sort_key,
     build_expanded_match_query,
     connect_database,
@@ -31,6 +32,51 @@ from contextual_review.importer import sentence_word_map
 
 
 class CorpusTests(unittest.TestCase):
+    def test_schema_creates_cjk_fts_with_trigram_tokenizer(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                schema = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = 'fts_cjk'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+            self.assertIn("tokenize='trigram'", schema)
+
+    def test_existing_database_migration_backfills_cjk_trigram_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            sentence = "猫が魚を食べる。"
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute("DROP TABLE fts_cjk")
+                conn.execute("DELETE FROM corpus_meta WHERE key = ?", (CJK_FTS_BACKFILL_KEY,))
+                conn.execute(
+                    "INSERT INTO sentences(language, full_text, word_count) VALUES ('ja', ?, 5)",
+                    (sentence,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            repaired = connect_database(db_path)
+            repaired.close()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                indexed = conn.execute(
+                    "SELECT rowid FROM fts_cjk WHERE fts_cjk MATCH ?",
+                    ('"食べる"',),
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(len(indexed), 1)
+
     def test_language_library_count_and_partial_or_full_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "sentences.db"
@@ -778,6 +824,10 @@ class CorpusTests(unittest.TestCase):
                     conn.execute("SELECT COUNT(*) FROM sentence_ngrams").fetchone()[0],
                     0,
                 )
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM fts_cjk").fetchone()[0],
+                    1,
+                )
             finally:
                 conn.close()
 
@@ -792,7 +842,10 @@ class CorpusTests(unittest.TestCase):
             ]
             with patch(
                 "contextual_review.corpus._scan_substring_candidate_rows",
-                side_effect=AssertionError("indexed Japanese lookup should not scan sentences"),
+                side_effect=AssertionError("trigram Japanese lookup should not scan sentences"),
+            ), patch(
+                "contextual_review.corpus._indexed_substring_candidate_rows",
+                side_effect=AssertionError("long Japanese lookup should use FTS5 trigram"),
             ):
                 task = select_review_task(
                     db_path,
@@ -811,6 +864,50 @@ class CorpusTests(unittest.TestCase):
             matched = next(token for token in task.tokens if token.is_target)
             self.assertEqual(matched.text, target)
             self.assertEqual(matched.card_ids, (88,))
+
+    def test_korean_target_uses_cjk_trigram_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            sentence = "고양이가 생선을 먹는다."
+            target = "먹는다"
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(conn, "ko", sentence, None, sentence_word_map(sentence, "ko"))
+                conn.commit()
+            finally:
+                conn.close()
+
+            due = [
+                DueCard(
+                    card_id=89,
+                    target_word=target,
+                    lemma=target,
+                    word_form=target,
+                    match_key=target,
+                )
+            ]
+            with patch(
+                "contextual_review.corpus._scan_substring_candidate_rows",
+                side_effect=AssertionError("trigram Korean lookup should not scan sentences"),
+            ), patch(
+                "contextual_review.corpus._indexed_substring_candidate_rows",
+                side_effect=AssertionError("long Korean lookup should use FTS5 trigram"),
+            ):
+                task = select_review_task(
+                    db_path,
+                    due,
+                    "ko",
+                    set(),
+                    10,
+                    min_sentence_words=2,
+                    max_sentence_words=10,
+                    matching_mode="exact_form",
+                )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.full_text, sentence)
 
     def test_candidate_sort_key_uses_bm25_then_shorter_sentence_for_ties(self) -> None:
         base = dict(

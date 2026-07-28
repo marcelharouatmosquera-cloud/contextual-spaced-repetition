@@ -6,7 +6,6 @@ import unittest
 
 import contextual_review.anki_bridge as bridge
 from contextual_review.anki_bridge import (
-    CardAnswerError,
     answer_review_task,
     build_answer_plan,
     build_due_search_query,
@@ -22,11 +21,6 @@ class FakeScheduler:
 
     def __init__(self) -> None:
         self.answers = []
-
-    def answerCard(self, card, ease: int) -> None:
-        if not card.timer_started:
-            raise TypeError("unsupported operand type(s) for -: 'float' and 'NoneType'")
-        self.answers.append((card.id, ease))
 
 
 class FakeCollection:
@@ -46,85 +40,27 @@ class FakeCollection:
 
 
 class ManualCollection:
+    """Read-only card-table fixture for bulk state inspection tests."""
+
     def __init__(self, card_ids) -> None:
         self.db = sqlite3.connect(":memory:")
         self.db.row_factory = sqlite3.Row
-        self.sched = FakeScheduler()
-        self.updated = False
-        self.saved = False
-        self._create_schema()
-        for card_id in card_ids:
-            self._insert_card(card_id)
-
-    def _create_schema(self) -> None:
         self.db.execute(
             """
             CREATE TABLE cards (
-                id INTEGER PRIMARY KEY,
-                nid INTEGER,
-                did INTEGER,
-                ord INTEGER,
-                mod INTEGER,
-                usn INTEGER,
-                type INTEGER,
-                queue INTEGER,
-                due INTEGER,
-                ivl INTEGER,
-                factor INTEGER,
-                reps INTEGER,
-                lapses INTEGER,
-                left INTEGER,
-                odue INTEGER,
-                odid INTEGER,
-                flags INTEGER,
-                data TEXT
+                id INTEGER PRIMARY KEY, nid INTEGER, did INTEGER, ord INTEGER,
+                mod INTEGER, usn INTEGER, type INTEGER, queue INTEGER,
+                due INTEGER, ivl INTEGER, factor INTEGER, reps INTEGER,
+                lapses INTEGER, left INTEGER, odue INTEGER, odid INTEGER,
+                flags INTEGER, data TEXT
             )
             """
         )
-        self.db.execute(
-            """
-            CREATE TABLE revlog (
-                id INTEGER PRIMARY KEY,
-                cid INTEGER,
-                usn INTEGER,
-                ease INTEGER,
-                ivl INTEGER,
-                lastIvl INTEGER,
-                factor INTEGER,
-                time INTEGER,
-                type INTEGER
-            )
-            """
-        )
-
-    def _insert_card(self, card_id: int) -> None:
-        self.db.execute(
-            """
-            INSERT INTO cards
-            VALUES (?, 1, 1, 0, 0, 0, 2, 2, 100, 5, 2500, 0, 0, 0, 0, 0, 0, '')
-            """,
-            (card_id,),
+        self.db.executemany(
+            "INSERT INTO cards VALUES (?, 1, 1, 0, 0, 0, 2, 2, 100, 5, 2500, 0, 0, 0, 0, 0, 0, '')",
+            ((int(card_id),) for card_id in card_ids),
         )
         self.db.commit()
-
-    def usn(self) -> int:
-        return 7
-
-    def save(self) -> None:
-        self.saved = True
-        self.db.commit()
-
-    def update(self) -> None:
-        self.updated = True
-
-    def get_card(self, card_id: int):
-        return FakeCard(card_id)
-
-    def card_row(self, card_id: int):
-        return self.db.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
-
-    def revlog_count(self) -> int:
-        return int(self.db.execute("SELECT COUNT(*) FROM revlog").fetchone()[0])
 
 
 class FakeDecks:
@@ -266,29 +202,6 @@ class SiblingGradeNowCollection(GradeNowCollection):
         self.states[12].update({"nid": 1, "queue": 0, "type": 0, "due": 1})
         self.decks = SiblingDecks()
         self.sched = SiblingScheduler(self)
-
-
-class SnakeCaseScheduler:
-    today = 100
-
-    def __init__(self) -> None:
-        self.answers = []
-
-    def answer_card(self, card, ease: int) -> None:
-        self.answers.append((card.id, ease))
-
-
-class FailingScheduler:
-    today = 100
-
-    def __init__(self, fail_on_card_id: int) -> None:
-        self.fail_on_card_id = fail_on_card_id
-        self.answers = []
-
-    def answerCard(self, card, ease: int) -> None:
-        if card.id == self.fail_on_card_id:
-            raise RuntimeError("boom")
-        self.answers.append((card.id, ease))
 
 
 class DirectionCollection:
@@ -1003,8 +916,8 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual([card.card_id for card in due_cards], [1, 1, 2])
 
-    def test_answer_review_task_uses_scheduler_eases(self) -> None:
-        mw = FakeMw()
+    def test_answer_review_task_maps_scheduler_eases_to_grade_now_ratings(self) -> None:
+        mw = FakeMw(GradeNowCollection([10, 20]))
         config = normalize_config({"known_ease": 3, "unknown_ease": 1})
         task = ReviewTask(
             sentence_id=1,
@@ -1017,8 +930,8 @@ class AnkiBridgeTests(unittest.TestCase):
 
         summary = answer_review_task(mw, task, ["review"], config)
 
-        self.assertEqual(mw.checkpoints, ["Contextual Review"])
-        self.assertEqual(mw.col.sched.answers, [(10, 1), (20, 3)])
+        self.assertEqual(mw.col._backend.calls, [([10], 0), ([20], 2)])
+        self.assertEqual(mw.col.undo_names, ["Contextual Review"])
         self.assertEqual(summary.answered_card_ids, [10, 20])
         self.assertEqual(summary.unknown_card_ids, [10])
         self.assertEqual(summary.known_card_ids, [20])
@@ -1084,9 +997,8 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual([(answer.card_id, answer.ease, answer.is_unknown) for answer in answers], [(12345, 1, True)])
 
-    def test_answer_review_task_uses_snake_case_scheduler(self) -> None:
-        scheduler = SnakeCaseScheduler()
-        mw = FakeMw(FakeCollection(scheduler=scheduler))
+    def test_answer_review_task_requires_native_grade_now(self) -> None:
+        mw = FakeMw(FakeCollection())
         config = normalize_config({})
         task = ReviewTask(
             sentence_id=1,
@@ -1097,9 +1009,8 @@ class AnkiBridgeTests(unittest.TestCase):
             card_ids_by_key={"review": [10]},
         )
 
-        answer_review_task(mw, task, [], config)
-
-        self.assertEqual(scheduler.answers, [(10, 3)])
+        with self.assertRaisesRegex(RuntimeError, "grade_now batch API is unavailable"):
+            answer_review_task(mw, task, [], config)
 
     def test_answer_review_task_batches_arbitrary_cards_with_anki_grade_now(self) -> None:
         mw = FakeMw(GradeNowCollection([10, 20]))
@@ -1123,29 +1034,6 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual(mw.col.merged_entries, [42, 42])
         self.assertTrue(mw.col.updated)
         self.assertTrue(mw.reset_called)
-        self.assertIsNone(summary.undo_snapshot)
-
-    def test_answer_review_task_prefers_native_scheduler_when_database_is_available(self) -> None:
-        mw = FakeMw(ManualCollection([10, 20]))
-        config = normalize_config({"known_ease": 3, "unknown_ease": 1})
-        task = ReviewTask(
-            sentence_id=1,
-            language="en",
-            full_text="We review cards.",
-            translation=None,
-            tokens=[],
-            card_ids_by_key={"review": [10], "card": [20]},
-        )
-
-        summary = answer_review_task(mw, task, ["review"], config)
-
-        self.assertEqual(mw.checkpoints, ["Contextual Review"])
-        self.assertEqual(mw.col.sched.answers, [(10, 1), (20, 3)])
-        self.assertEqual(mw.col.revlog_count(), 0)
-        self.assertEqual(summary.answered_card_ids, [10, 20])
-        self.assertEqual(summary.unknown_card_ids, [10])
-        self.assertEqual(summary.known_card_ids, [20])
-        self.assertIsNone(summary.undo_snapshot)
 
     def test_grade_now_rolls_back_a_partially_graded_sentence(self) -> None:
         mw = FakeMw(GradeNowCollection([10, 20], fail_rating=2))
@@ -1188,8 +1076,8 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual(mw.col.states[12]["queue"], 0)
         self.assertEqual(mw.col.merged_entries, [42, 42])
 
-    def test_answer_review_task_preflights_missing_cards_before_checkpoint(self) -> None:
-        mw = FakeMw(FakeCollection(missing_card_ids={20}))
+    def test_answer_review_task_preflights_missing_cards_before_undo_entry(self) -> None:
+        mw = FakeMw(GradeNowCollection([10]))
         config = normalize_config({})
         task = ReviewTask(
             sentence_id=1,
@@ -1203,30 +1091,8 @@ class AnkiBridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Could not load card"):
             answer_review_task(mw, task, [], config)
 
-        self.assertEqual(mw.checkpoints, [])
-        self.assertEqual(mw.col.sched.answers, [])
-
-    def test_answer_review_task_reports_partial_scheduler_failure(self) -> None:
-        scheduler = FailingScheduler(fail_on_card_id=20)
-        mw = FakeMw(FakeCollection(scheduler=scheduler))
-        config = normalize_config({})
-        task = ReviewTask(
-            sentence_id=1,
-            language="en",
-            full_text="We review cards.",
-            translation=None,
-            tokens=[],
-            card_ids_by_key={"review": [10], "card": [20]},
-        )
-
-        with self.assertRaises(CardAnswerError) as raised:
-            answer_review_task(mw, task, [], config)
-
-        self.assertEqual(mw.checkpoints, ["Contextual Review"])
-        self.assertEqual(raised.exception.answered_card_ids, [10])
-        self.assertIn("after answering 1 card", str(raised.exception))
-        self.assertTrue(mw.col.updated)
-        self.assertTrue(mw.reset_called)
+        self.assertEqual(mw.col.undo_names, [])
+        self.assertEqual(mw.col._backend.calls, [])
 
 
 if __name__ == "__main__":

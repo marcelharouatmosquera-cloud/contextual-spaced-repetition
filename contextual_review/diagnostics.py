@@ -18,6 +18,7 @@ from .config import ContextConfig, load_config, resolve_database_path
 from .corpus import open_review_database
 from .debug_log import debug_log_path
 from .language_profiles import language_match_codes
+from .normalizer import is_unsegmented_language
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,7 @@ def collect_diagnostics(mw: Any, addon_name: str) -> DiagnosticReport:
         _config_check(config),
         database_check,
         _scheduler_check(mw),
-        _checkpoint_check(mw),
+        _native_undo_check(mw),
         _background_task_check(mw),
         _debug_log_check(),
         _due_search_check(mw, config),
@@ -128,6 +129,19 @@ def _database_check(path: Path, language: str) -> DiagnosticCheck:
                 ).fetchone()[0]
             )
             word_forms_count = int(conn.execute("SELECT COUNT(*) FROM word_forms").fetchone()[0])
+            cjk_fts_present = "fts_cjk" in tables
+            cjk_fts_count = (
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM fts_cjk "
+                        "JOIN sentences s ON s.id = fts_cjk.rowid "
+                        "WHERE s.language IN (%s)" % placeholders,
+                        language_codes,
+                    ).fetchone()[0]
+                )
+                if cjk_fts_present
+                else 0
+            )
         finally:
             conn.close()
     except Exception as exc:
@@ -148,29 +162,64 @@ def _database_check(path: Path, language: str) -> DiagnosticCheck:
             "%s sentences but %s form-index rows; import content again to repair the index"
             % (total, sentence_forms_count),
         )
+    if is_unsegmented_language(language) and not cjk_fts_present:
+        return DiagnosticCheck(
+            "Corpus database",
+            "warning",
+            "%s sentences for language %s, but the FTS5 trigram index is missing; start review once or import content to migrate it"
+            % (language_count, language),
+        )
+    if is_unsegmented_language(language) and language_count and not cjk_fts_count:
+        return DiagnosticCheck(
+            "Corpus database",
+            "warning",
+            "%s sentences for language %s, but the FTS5 trigram index is empty; import content again to repair it"
+            % (language_count, language),
+        )
     return DiagnosticCheck(
         "Corpus database",
         "ok",
-        "%s sentences total; %s for language %s; %s translated; %s word-form mappings"
-        % (total, language_count, language, translated_count, word_forms_count),
+        "%s sentences total; %s for language %s; %s translated; %s word-form mappings; %s trigram-index rows for this language"
+        % (total, language_count, language, translated_count, word_forms_count, cjk_fts_count),
     )
 
 
 def _scheduler_check(mw: Any) -> DiagnosticCheck:
-    scheduler = getattr(getattr(mw, "col", None), "sched", None)
+    collection = getattr(mw, "col", None)
+    scheduler = getattr(collection, "sched", None)
     if scheduler is None:
         return DiagnosticCheck("Scheduler", "error", "collection scheduler unavailable")
-    if hasattr(scheduler, "answerCard") or hasattr(scheduler, "answer_card"):
-        return DiagnosticCheck("Scheduler", "ok", "native answer API available")
-    return DiagnosticCheck("Scheduler", "error", "answerCard/answer_card unavailable")
+    grade_now = getattr(getattr(collection, "_backend", None), "grade_now", None)
+    if callable(grade_now):
+        return DiagnosticCheck("Scheduler", "ok", "native grade_now batch API available")
+    return DiagnosticCheck("Scheduler", "error", "backend grade_now API unavailable")
 
 
-def _checkpoint_check(mw: Any) -> DiagnosticCheck:
-    if getattr(getattr(mw, "col", None), "db", None) is not None:
-        return DiagnosticCheck("Undo support", "ok", "contextual batch snapshots available")
-    if callable(getattr(mw, "checkpoint", None)):
-        return DiagnosticCheck("Undo support", "ok", "mw.checkpoint available")
-    return DiagnosticCheck("Undo support", "error", "mw.checkpoint unavailable")
+def _native_undo_check(mw: Any) -> DiagnosticCheck:
+    collection = getattr(mw, "col", None)
+    required = {
+        "add_custom_undo_entry": getattr(collection, "add_custom_undo_entry", None),
+        "merge_undo_entries": getattr(collection, "merge_undo_entries", None),
+        "undo": getattr(collection, "undo", None),
+    }
+    missing = [name for name, value in required.items() if not callable(value)]
+    if missing:
+        return DiagnosticCheck(
+            "Undo support",
+            "error",
+            "native batch undo API(s) unavailable: %s" % ", ".join(missing),
+        )
+    if not callable(getattr(collection, "undo_status", None)):
+        return DiagnosticCheck(
+            "Undo support",
+            "warning",
+            "native batch undo available; undo_status unavailable for guarded Ctrl+Z",
+        )
+    return DiagnosticCheck(
+        "Undo support",
+        "ok",
+        "native custom undo merge and guarded Ctrl+Z APIs available",
+    )
 
 
 def _background_task_check(mw: Any) -> DiagnosticCheck:
@@ -328,7 +377,7 @@ def _sqlite_has_fts5() -> bool:
     try:
         conn = sqlite3.connect(":memory:")
         try:
-            conn.execute("CREATE VIRTUAL TABLE diag_fts USING fts5(x)")
+            conn.execute("CREATE VIRTUAL TABLE diag_fts USING fts5(x, tokenize='trigram')")
         finally:
             conn.close()
         return True

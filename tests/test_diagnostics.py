@@ -12,6 +12,7 @@ from contextual_review.diagnostics import (
     DiagnosticReport,
     _card_direction_check,
     _config_check,
+    _database_check,
     collect_diagnostics,
     format_diagnostics,
 )
@@ -29,7 +30,9 @@ class FakeAddonManager:
 class FakeScheduler:
     today = 100
 
-    def answerCard(self, card, ease: int) -> None:
+
+class FakeBackend:
+    def grade_now(self, *, card_ids, rating: int) -> None:
         pass
 
 
@@ -42,8 +45,9 @@ class FakeDecks:
 
 
 class FakeCollection:
-    def __init__(self, card_ids=None, scheduler=None, cards=None):
+    def __init__(self, card_ids=None, scheduler=None, cards=None, backend=None):
         self.sched = scheduler if scheduler is not None else FakeScheduler()
+        self._backend = backend if backend is not None else FakeBackend()
         self.decks = FakeDecks()
         self.card_ids = list(card_ids or [])
         self.cards = dict(cards or {})
@@ -54,6 +58,18 @@ class FakeCollection:
     def get_card(self, card_id: int):
         return self.cards[int(card_id)]
 
+    def add_custom_undo_entry(self, name: str) -> int:
+        return 1
+
+    def merge_undo_entries(self, target: int) -> None:
+        pass
+
+    def undo(self) -> None:
+        pass
+
+    def undo_status(self):
+        return None
+
 
 class FakeMw:
     def __init__(
@@ -61,15 +77,18 @@ class FakeMw:
         config,
         card_ids=None,
         scheduler=None,
+        backend=None,
         taskman=None,
-        checkpoint=True,
         cards=None,
     ):
         self.addonManager = FakeAddonManager(config)
-        self.col = FakeCollection(card_ids=card_ids, scheduler=scheduler, cards=cards)
+        self.col = FakeCollection(
+            card_ids=card_ids,
+            scheduler=scheduler,
+            cards=cards,
+            backend=backend,
+        )
         self.taskman = taskman
-        if checkpoint:
-            self.checkpoint = lambda name: None
 
 
 class FakeTaskman:
@@ -105,6 +124,23 @@ class DirectionCard:
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_database_check_reports_cjk_trigram_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "context.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                text = "猫が魚を食べる。"
+                insert_sentence(conn, "ja", text, None, sentence_word_map(text, "ja"))
+                conn.commit()
+            finally:
+                conn.close()
+
+            check = _database_check(db_path, "ja")
+
+            self.assertEqual(check.status, "ok")
+            self.assertIn("1 trigram-index rows", check.detail)
+
     def test_collect_diagnostics_ok_for_ready_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "context.db"
@@ -130,7 +166,7 @@ class DiagnosticsTests(unittest.TestCase):
             mw = FakeMw(
                 {"database_path": str(db_path), "language": "en"},
                 scheduler=object(),
-                checkpoint=False,
+                backend=object(),
             )
 
             report = collect_diagnostics(mw, "addon")
@@ -138,8 +174,7 @@ class DiagnosticsTests(unittest.TestCase):
 
             self.assertFalse(report.ok)
             self.assertIn("missing at", text)
-            self.assertIn("answerCard/answer_card unavailable", text)
-            self.assertIn("mw.checkpoint unavailable", text)
+            self.assertIn("backend grade_now API unavailable", text)
 
     def test_report_with_warning_needs_attention_without_error(self) -> None:
         report = DiagnosticReport([DiagnosticCheck("Due search", "warning", "query returned no cards")])

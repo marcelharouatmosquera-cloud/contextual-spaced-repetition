@@ -28,7 +28,7 @@ class SmokeReviewLoopTests(unittest.TestCase):
         self.assertEqual(result["answered_card_ids"], [101, 102])
         self.assertEqual(result["unknown_card_ids"], [101])
         self.assertEqual(result["known_card_ids"], [102])
-        self.assertEqual(result["checkpoint_count"], 1)
+        self.assertEqual(result["undo_entry_count"], 1)
         self.assertGreater(result["html_length"], 1000)
 
 
