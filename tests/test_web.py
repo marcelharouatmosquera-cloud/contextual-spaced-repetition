@@ -222,6 +222,10 @@ class WebTests(unittest.TestCase):
         self.assertIn("}, 180);", html)
         self.assertIn("window.contextualTranslationFinished", html)
         self.assertIn("contextTranslationCache", html)
+        self.assertIn('mine.textContent = "Add Note"', html)
+        self.assertIn('action: "mine_word"', html)
+        self.assertIn("window.contextualMineFinished", html)
+        self.assertIn("window.contextualMineUndone", html)
 
     def test_ctrl_z_routes_to_contextual_undo(self) -> None:
         html = render_task_html(self._task())
@@ -241,17 +245,20 @@ class WebTests(unittest.TestCase):
         self.assertIn("window.contextualFavoriteChanged", html)
         self.assertIn("#favorite {\n  position: fixed;\n  top: 14px;\n  right: 14px;", html)
 
-    def test_today_progress_is_number_free_and_anchored_after_actions(self) -> None:
+    def test_today_progress_is_stacked_and_anchored_after_actions(self) -> None:
         html = render_task_html(
             self._task(),
             progress_completed=3,
+            progress_learning=2,
             progress_total=10,
             can_undo=True,
         )
 
         self.assertIn('aria-label="Today\'s review progress"', html)
-        self.assertIn('style="--review-progress: 30.0000%"', html)
-        self.assertNotIn("3 of 10 completed", html)
+        self.assertIn('style="--review-completed: 30.0000%; --review-learning: 20.0000%"', html)
+        self.assertIn("3 Done / 2 Learning / 10 Total", html)
+        self.assertIn('id="bar-completed"', html)
+        self.assertIn('id="bar-learning"', html)
         self.assertNotIn("<progress", html)
         self.assertGreater(html.index('class="session-progress"'), html.index('class="actions"'))
         self.assertIn("position: fixed", html)

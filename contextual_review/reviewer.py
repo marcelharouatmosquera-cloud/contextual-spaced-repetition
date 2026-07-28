@@ -32,6 +32,14 @@ class AnkiUndoMarker:
 ReviewUndoHandle = Optional[AnkiUndoMarker]
 
 
+def _history_entry_parts(entry: Any) -> Tuple[ReviewTask, List[int], ReviewUndoHandle, Set[int], Set[int]]:
+    """Read current history rows while tolerating pre-upgrade three-part rows."""
+    task, answered_card_ids, undo_handle = entry[:3]
+    previous_completed = set(entry[3]) if len(entry) > 3 else set()
+    previous_learning = set(entry[4]) if len(entry) > 4 else set()
+    return task, list(answered_card_ids), undo_handle, previous_completed, previous_learning
+
+
 def open_contextual_review_dialog(mw: Any, addon_name: str) -> "ContextualReviewDialog":  # pragma: no cover
     dialog = ContextualReviewDialog(mw, addon_name)
     dialog.show()
@@ -76,7 +84,11 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         # The historical name is retained because it is also used by undo and
         # due-card filtering throughout this controller.
         self.answered_card_ids: Set[int] = set()
-        self.review_history: List[Tuple[ReviewTask, List[int], ReviewUndoHandle]] = []
+        self.learning_card_ids: Set[int] = set()
+        self.review_history: List[
+            Tuple[ReviewTask, List[int], ReviewUndoHandle, Set[int], Set[int]]
+        ] = []
+        self._mining_undo_markers: List[AnkiUndoMarker] = []
         self._session_results: List[Tuple[int, int]] = []
         self._session_forgotten_words: List[List[str]] = []
         self._session_summary_shown = False
@@ -194,9 +206,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     if full_today_ids is not None
                     else (card.card_id for card in collected_due_cards)
                 )
-                if getattr(self, "_today_goal_initialized", False):
-                    self.today_goal_card_ids.update(collected_today_ids)
-                else:
+                if not getattr(self, "_today_goal_initialized", False):
                     self.today_goal_card_ids = collected_today_ids
                     self._today_goal_initialized = True
             # A cached DueCard reflects the card's state before it was graded.
@@ -207,7 +217,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             cached_reviewed_card_ids = (
                 {
                     card_id
-                    for _task, card_ids, _snapshot in getattr(self, "review_history", [])
+                    for entry in getattr(self, "review_history", [])
+                    for card_ids in (_history_entry_parts(entry)[1],)
                     for card_id in card_ids
                 }
                 if cache_hit
@@ -461,6 +472,11 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 "hover",
                 payload.get("request_id") or 0,
             )
+        elif payload.get("action") == "mine_word":
+            self._mine_word(
+                payload.get("word") or "",
+                payload.get("translation") or "",
+            )
         elif payload.get("action") == "play_media":
             self._play_media(payload.get("source") or "")
         elif payload.get("action") == "speak_sentence":
@@ -509,10 +525,29 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         if completed_card_ids is None:
             # Compatibility for older bridges and lightweight test doubles.
             completed_card_ids = summary.known_card_ids
+        learning_card_ids = getattr(summary, "learning_card_ids", None)
+        if learning_card_ids is None:
+            learning_card_ids = []
+        answered_ids = {int(card_id) for card_id in summary.answered_card_ids}
+        learning_progress_ids = getattr(self, "learning_card_ids", None)
+        if learning_progress_ids is None:
+            learning_progress_ids = set()
+            self.learning_card_ids = learning_progress_ids
+        previous_completed = set(self.answered_card_ids) & answered_ids
+        previous_learning = set(learning_progress_ids) & answered_ids
+        self.answered_card_ids.difference_update(answered_ids)
+        learning_progress_ids.difference_update(answered_ids)
         self.answered_card_ids.update(completed_card_ids)
+        learning_progress_ids.update(learning_card_ids)
         undo_handle: ReviewUndoHandle = _capture_anki_undo_marker(self.mw)
         self.review_history.append(
-            (self.active_task, list(summary.answered_card_ids), undo_handle)
+            (
+                self.active_task,
+                list(summary.answered_card_ids),
+                undo_handle,
+                previous_completed,
+                previous_learning,
+            )
         )
         self._notify_progress_changed()
         self._notify_undo_available(True)
@@ -546,6 +581,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._load_next_task(refresh_due_cards=True)
 
     def _undo_last_review(self) -> None:
+        mining_markers = getattr(self, "_mining_undo_markers", [])
+        if mining_markers and _anki_undo_marker_is_current(self.mw, mining_markers[-1]):
+            try:
+                _undo_marked_anki_operation(self.mw, mining_markers.pop())
+            except Exception as exc:
+                self._notify_mining_undone("Could not undo the mined note: %s" % exc)
+                return
+            self._notify_mining_undone("Mined note undone.")
+            return
         if not self.review_history:
             return
 
@@ -553,14 +597,17 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         # Its callback must not replace the sentence restored by this undo.
         self._invalidate_pending_selection()
         interrupted_task = self.active_task
-        task, answered_card_ids, undo_handle = self.review_history.pop()
+        entry = self.review_history.pop()
+        task, answered_card_ids, undo_handle, previous_completed, previous_learning = (
+            _history_entry_parts(entry)
+        )
         try:
             if isinstance(undo_handle, AnkiUndoMarker):
                 _undo_marked_anki_operation(self.mw, undo_handle)
             else:
                 _undo_last_anki_operation(self.mw)
         except Exception as exc:
-            self.review_history.append((task, answered_card_ids, undo_handle))
+            self.review_history.append(entry)
             self._set_html(
                 render_message_html(
                     "Could not undo last review",
@@ -574,6 +621,13 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             return
 
         self.answered_card_ids.difference_update(answered_card_ids)
+        learning_progress_ids = getattr(self, "learning_card_ids", None)
+        if learning_progress_ids is None:
+            learning_progress_ids = set()
+            self.learning_card_ids = learning_progress_ids
+        learning_progress_ids.difference_update(answered_card_ids)
+        self.answered_card_ids.update(previous_completed)
+        learning_progress_ids.update(previous_learning)
         self._notify_progress_changed()
         session_results = getattr(self, "_session_results", [])
         if session_results:
@@ -596,7 +650,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         # Rendering starts a fresh question phase, including when Previous
         # restores the same sentence that was just on screen.
         self._revealed_sentence_id = None
-        completed, total = self._today_progress()
+        completed, learning, total = self._today_progress()
         database_path = getattr(self, "db_path", None)
         try:
             favorite = bool(
@@ -611,6 +665,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 dark_mode=self._dark_mode(),
                 font_size=self.config.font_size,
                 progress_completed=completed,
+                progress_learning=learning,
                 progress_total=total,
                 can_undo=bool(getattr(self, "review_history", [])),
                 is_favorite=favorite,
@@ -652,6 +707,97 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         except Exception:
             self._notify_favorite_changed(False, "Could not update sentence favorites.")
 
+    def _mine_word(self, word: str, translation: str) -> None:
+        task = self.active_task
+        target_word = str(word or "").strip()
+        meaning = str(translation or "").strip()
+        if task is None:
+            self._notify_mining_finished(False, "There is no active sentence.")
+            return
+        if not target_word or not meaning:
+            self._notify_mining_finished(False, "Translate the word before adding it.")
+            return
+
+        def create(audio_path: Optional[Path], audio_error: str = "") -> None:
+            try:
+                from .note_creation import create_mined_note
+
+                result = create_mined_note(
+                    self.mw,
+                    task,
+                    target_word,
+                    meaning,
+                    self.config,
+                    audio_path=audio_path,
+                )
+                marker = _capture_anki_undo_marker(self.mw)
+                if marker is not None:
+                    markers = getattr(self, "_mining_undo_markers", None)
+                    if markers is None:
+                        markers = []
+                        self._mining_undo_markers = markers
+                    markers.append(marker)
+                message = "Added note with %s card%s at the front of the New queue." % (
+                    len(result.card_ids),
+                    "" if len(result.card_ids) == 1 else "s",
+                )
+                if audio_error:
+                    message += " Audio was unavailable."
+                elif audio_path is not None and not result.audio_added:
+                    message += " The note type has no audio field, so no audio was attached."
+                self._notify_mining_finished(True, message)
+            except Exception as exc:
+                self._notify_mining_finished(False, str(exc))
+
+        if not bool(getattr(self.config, "auto_mine_tts", True)):
+            create(None)
+            return
+
+        def synthesize() -> Path:
+            from .tts import synthesize_sentence
+
+            return synthesize_sentence(target_word, task.language or self.config.language)
+
+        def done(future: Any) -> None:
+            try:
+                create(Path(future.result()), "")
+            except Exception as exc:
+                create(None, _friendly_tts_error(exc))
+
+        taskman = getattr(getattr(self, "mw", None), "taskman", None)
+        if taskman is not None and callable(getattr(taskman, "run_in_background", None)):
+            try:
+                taskman.run_in_background(synthesize, done)
+                return
+            except Exception as exc:
+                create(None, _friendly_tts_error(exc))
+                return
+        try:
+            create(synthesize(), "")
+        except Exception as exc:
+            create(None, _friendly_tts_error(exc))
+
+    def _notify_mining_finished(self, success: bool, message: str) -> None:
+        try:
+            self.web.eval(
+                "window.contextualMineFinished(%s, %s);"
+                % (
+                    "true" if success else "false",
+                    json.dumps(str(message or ""), ensure_ascii=False),
+                )
+            )
+        except Exception:
+            pass
+
+    def _notify_mining_undone(self, message: str) -> None:
+        try:
+            self.web.eval(
+                "window.contextualMineUndone(%s);"
+                % json.dumps(str(message or ""), ensure_ascii=False)
+            )
+        except Exception:
+            pass
+
     def _notify_favorite_changed(self, saved: bool, error: str) -> None:
         try:
             self.web.eval(
@@ -680,18 +826,22 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             pass
 
     def _notify_progress_changed(self) -> None:
-        completed, total = self._today_progress()
+        completed, learning, total = self._today_progress()
         try:
             self.web.eval(
-                "window.contextualProgressChanged(%s, %s);" % (completed, total)
+                "window.contextualProgressChanged(%s, %s, %s);"
+                % (completed, learning, total)
             )
         except Exception:
             pass
 
-    def _today_progress(self) -> Tuple[int, int]:
+    def _today_progress(self) -> Tuple[int, int, int]:
         goal_ids = set(getattr(self, "today_goal_card_ids", set()))
         completed_ids = set(getattr(self, "answered_card_ids", set()))
-        return len(completed_ids & goal_ids), len(goal_ids)
+        learning_ids = set(getattr(self, "learning_card_ids", set()))
+        completed = completed_ids & goal_ids
+        learning = (learning_ids & goal_ids) - completed
+        return len(completed), len(learning), len(goal_ids)
 
     def _session_summary_text(self) -> str:
         results = list(getattr(self, "_session_results", []) or [])
@@ -1159,6 +1309,11 @@ def _capture_anki_undo_marker(mw: Any) -> Optional[AnkiUndoMarker]:
     if last_step <= 0 or not label:
         return None
     return AnkiUndoMarker(last_step, label)
+
+
+def _anki_undo_marker_is_current(mw: Any, marker: AnkiUndoMarker) -> bool:
+    current = _capture_anki_undo_marker(mw)
+    return current == marker
 
 
 def _undo_marked_anki_operation(mw: Any, marker: AnkiUndoMarker) -> None:

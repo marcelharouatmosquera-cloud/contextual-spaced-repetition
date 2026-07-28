@@ -33,6 +33,7 @@ REQUIRED_FILES = {
     "contextual_review/anki_bridge.py",
     "contextual_review/corpus.py",
     "contextual_review/diagnostics.py",
+    "contextual_review/note_creation.py",
     "contextual_review/web.py",
     "data/contextual_sentences.db",
     "data/language_profiles.json",

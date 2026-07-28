@@ -41,6 +41,7 @@ class AnswerSummary:
     unknown_card_ids: List[int]
     known_card_ids: List[int]
     completed_card_ids: Optional[List[int]] = None
+    learning_card_ids: Optional[List[int]] = None
 
 
 def build_due_search_query(mw: Any, config: ContextConfig) -> str:
@@ -446,7 +447,7 @@ def answer_review_task(
             unknown_card_ids=unknown_card_id_list,
             card_ids_by_key=task.card_ids_by_key,
         )
-        return AnswerSummary([], [], [], completed_card_ids=[])
+        return AnswerSummary([], [], [], completed_card_ids=[], learning_card_ids=[])
 
     answer_card_ids = [answer.card_id for answer in answers]
     append_debug_log(
@@ -680,15 +681,17 @@ def _debug_answer_summary(summary: AnswerSummary) -> Dict[str, Any]:
         "unknown_card_ids": summary.unknown_card_ids,
         "known_card_ids": summary.known_card_ids,
         "completed_card_ids": list(summary.completed_card_ids or ()),
+        "learning_card_ids": list(summary.learning_card_ids or ()),
     }
 
 
 def _with_completed_card_ids(mw: Any, summary: AnswerSummary) -> AnswerSummary:
     """Mark Good cards complete only when their next step leaves today's lesson."""
     known_card_ids = _unique_ids(summary.known_card_ids)
+    answered_card_ids = _unique_ids(summary.answered_card_ids)
     states = {
         int(state["card_id"]): state
-        for state in _debug_card_states(mw, known_card_ids)
+        for state in _debug_card_states(mw, answered_card_ids)
         if state.get("card_id") is not None
     }
     today = int(getattr(getattr(getattr(mw, "col", None), "sched", None), "today", 0) or 0)
@@ -697,12 +700,27 @@ def _with_completed_card_ids(mw: Any, summary: AnswerSummary) -> AnswerSummary:
         for card_id in known_card_ids
         if _card_state_is_beyond_current_lesson(states.get(card_id), today)
     ]
+    learning_card_ids = [
+        card_id
+        for card_id in answered_card_ids
+        if _card_state_is_intraday_learning(states.get(card_id))
+    ]
     return AnswerSummary(
         answered_card_ids=list(summary.answered_card_ids),
         unknown_card_ids=list(summary.unknown_card_ids),
         known_card_ids=list(summary.known_card_ids),
         completed_card_ids=completed_card_ids,
+        learning_card_ids=learning_card_ids,
     )
+
+
+def _card_state_is_intraday_learning(state: Optional[Dict[str, Any]]) -> bool:
+    if not state or state.get("error"):
+        return False
+    try:
+        return int(state.get("queue")) == 1
+    except (TypeError, ValueError):
+        return False
 
 
 def _card_state_is_beyond_current_lesson(

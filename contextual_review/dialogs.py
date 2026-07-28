@@ -391,6 +391,11 @@ def _open_settings_editor_dialog(
         "Read recognition sentences when they appear. Recall sentences wait until Show Solution "
         "so the missing answer is not spoken early."
     )
+    auto_mine_tts = QCheckBox()
+    auto_mine_tts.setChecked(config.auto_mine_tts)
+    auto_mine_tts.setToolTip(
+        "Generate target-language audio when Add Note is used from a hover translation."
+    )
     strict_import = QCheckBox()
     strict_import.setChecked(config.strict_import_filter)
     keep_downloads = QCheckBox()
@@ -521,6 +526,7 @@ def _open_settings_editor_dialog(
     advanced_form.addRow("Dictionary URL", dictionary_url)
     advanced_form.addRow("Only use verified sentences", strict_import)
     advanced_form.addRow("Keep downloaded archives", keep_downloads)
+    advanced_form.addRow("Add audio to mined notes", auto_mine_tts)
     advanced_form.addRow("Sentence text size", font_size)
 
     maintenance_group = QGroupBox("Import and Maintenance")
@@ -689,6 +695,7 @@ def _open_settings_editor_dialog(
         max_new.setValue(source_config.max_new_cards)
         include_learning.setChecked(source_config.include_learning_cards)
         autoplay_sentence_tts.setChecked(source_config.autoplay_sentence_tts)
+        auto_mine_tts.setChecked(source_config.auto_mine_tts)
         strict_import.setChecked(source_config.strict_import_filter)
         keep_downloads.setChecked(source_config.keep_downloaded_archives)
         apply_solution_mapping(source_config)
@@ -798,7 +805,7 @@ def _open_settings_editor_dialog(
         _set_combo_value(matching_mode, "lemma_family")
         _set_combo_value(target_extraction, "content_words")
         min_words.setValue(4)
-        max_words.setValue(15)
+        max_words.setValue(12)
         base_solution_state.update(
             {
                 "translation_field": result.translation_field,
@@ -1065,6 +1072,7 @@ def _open_settings_editor_dialog(
         "max_new_cards": max_new.value(),
         "include_learning_cards": include_learning.isChecked(),
         "autoplay_sentence_tts": autoplay_sentence_tts.isChecked(),
+        "auto_mine_tts": auto_mine_tts.isChecked(),
         "strict_import_filter": strict_import.isChecked(),
         "keep_downloaded_archives": keep_downloads.isChecked(),
     }
@@ -1126,6 +1134,7 @@ def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma:
         QTextBrowser,
         QVBoxLayout,
     )
+    from aqt.utils import showInfo, showWarning
 
     config = load_config(mw, addon_name)
     try:
@@ -1196,10 +1205,36 @@ def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma:
         remove_favorite_sentence(str(saved[index].get("key", "")))
         refresh()
 
+    def export_all() -> None:
+        if not saved:
+            showWarning("There are no favorite sentences to export.", parent=dialog)
+            return
+        try:
+            from .note_creation import export_favorites_to_anki
+
+            result = export_favorites_to_anki(mw, saved)
+        except Exception as exc:
+            showWarning("Could not export favorites:\n\n%s" % exc, parent=dialog)
+            return
+        showInfo(
+            "Added %s favorite sentence%s to '%s'.\nSkipped %s duplicate%s."
+            % (
+                result.added,
+                "" if result.added == 1 else "s",
+                result.deck_name,
+                result.skipped,
+                "" if result.skipped == 1 else "s",
+            ),
+            parent=dialog,
+        )
+
     sentence_list.currentRowChanged.connect(lambda _row: render_selected())
     refresh()
 
     buttons_row = QHBoxLayout()
+    export_button = QPushButton("Export All to Anki Deck")
+    export_button.clicked.connect(export_all)
+    buttons_row.addWidget(export_button)
     remove_button = QPushButton("Remove from Favorites")
     remove_button.clicked.connect(remove_selected)
     buttons_row.addWidget(remove_button)

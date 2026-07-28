@@ -43,7 +43,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_due_cards": 20,
     "max_imported_sentences": 100000,
     "min_sentence_words": 4,
-    "max_sentence_words": 15,
+    "max_sentence_words": 12,
     "candidate_limit": 50,
     "query_term_limit": 40,
     "future_due_days": 0,
@@ -56,6 +56,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_new_cards": 10,
     "include_learning_cards": True,
     "autoplay_sentence_tts": False,
+    "auto_mine_tts": True,
     "strict_import_filter": True,
     "keep_downloaded_archives": False,
     "dictionary_url_template": "",
@@ -106,6 +107,7 @@ class ContextConfig:
     max_new_cards: int
     include_learning_cards: bool
     autoplay_sentence_tts: bool
+    auto_mine_tts: bool
     strict_import_filter: bool
     keep_downloaded_archives: bool
     dictionary_url_template: str
@@ -158,7 +160,7 @@ def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
     if not dictionary_url_template:
         dictionary_url_template = profile_dictionary_url(language)
     min_sentence_words = _positive_int(raw.get("min_sentence_words"), 4)
-    max_sentence_words = _positive_int(raw.get("max_sentence_words"), 15)
+    max_sentence_words = _positive_int(raw.get("max_sentence_words"), 12)
     if min_sentence_words > max_sentence_words:
         min_sentence_words, max_sentence_words = max_sentence_words, min_sentence_words
     dictionary_field = str(raw.get("dictionary_field", "Back") or "Back").strip() or "Back"
@@ -202,6 +204,7 @@ def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
         max_new_cards=_positive_int(raw.get("max_new_cards"), 10),
         include_learning_cards=_bool(raw.get("include_learning_cards"), True),
         autoplay_sentence_tts=_bool(raw.get("autoplay_sentence_tts"), False),
+        auto_mine_tts=_bool(raw.get("auto_mine_tts"), True),
         strict_import_filter=_bool(raw.get("strict_import_filter"), True),
         keep_downloaded_archives=_bool(raw.get("keep_downloaded_archives"), False),
         dictionary_url_template=dictionary_url_template,

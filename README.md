@@ -113,14 +113,26 @@ Use the star button in the top-right corner to save or remove the current
 sentence from favorites. Open `Tools > Contextual Review > Favorite Sentences`
 to revisit saved sentences, translations, and target-word definitions later.
 The list is filtered to the active language deck and its sentence database.
+`Export All to Anki Deck` copies them into a dedicated Contextual Review
+Favorites deck and skips duplicate sentences.
+
+Hover over a non-target word to translate it, then choose `Add Note` to mine it
+into the current deck. The note uses the exact note type of the active card, so
+note types with forward and reverse templates generate both cards. The detected
+target, translation, example-sentence, and audio fields are filled when present;
+the generated New cards are moved to the front through Anki's scheduler API.
+Automatic word audio is enabled by default and can be disabled in Advanced /
+Nerd Settings.
 
 Clicked target cards are answered as `Again`. Unclicked target cards are
 answered as `Good`. The add-on schedules those linked cards as a contextual
 batch, so a sentence can cover multiple due words without being limited to
 Anki's next queued card. `Ctrl+Z` restores the previous contextual batch.
 While the next sentence is being selected, the current sentence remains on
-screen and Ctrl+Z stays available. The progress bar updates immediately after
-grading or undoing.
+screen and Ctrl+Z stays available. The stacked progress bar updates immediately
+after grading or undoing: green is finished for today, orange is waiting in an
+intraday learning/relearning step, and gray is remaining from the session's
+initial due-card goal.
 Sentences are avoided while the current Contextual Review window remains open,
 and recently shown sentences are also avoided when you close and reopen the
 window. They can still appear again if matching due cards remain and the corpus
@@ -249,7 +261,7 @@ Settings opens on `Basic Setup`. Most users only need to:
 `Advanced / Nerd Settings` contains Anki search syntax, separate recognition
 and recall template lists, matching behavior, sentence lengths, database paths,
 dictionary URLs, import filters, and additional solution fields. New profiles
-default to lemma-family matching and sentences between 4 and 15 words.
+default to lemma-family matching and sentences between 4 and 12 words.
 
 Settings discovers note fields from the deck you chose and offers them in
 editable dropdowns. Use `Refresh fields from selected deck` after changing

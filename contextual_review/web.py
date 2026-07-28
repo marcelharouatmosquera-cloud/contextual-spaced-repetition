@@ -15,6 +15,7 @@ def render_task_html(
     dark_mode: bool = False,
     font_size: int = 34,
     progress_completed: int = 0,
+    progress_learning: int = 0,
     progress_total: int = 0,
     can_undo: bool = False,
     is_favorite: bool = False,
@@ -35,9 +36,11 @@ def render_task_html(
     sentence_html = _render_sentence_tokens(task.tokens, theme)
     completed = max(0, min(int(progress_completed), int(progress_total)))
     total = max(0, int(progress_total))
+    learning = max(0, min(int(progress_learning), total - completed))
     progress_html = ""
     if total:
-        progress_percent = (completed / total) * 100
+        completed_percent = (completed / total) * 100
+        learning_percent = (learning / total) * 100
         progress_html = """
   <div
     class="session-progress"
@@ -46,12 +49,14 @@ def render_task_html(
     aria-valuemin="0"
     aria-valuemax="%s"
     aria-valuenow="%s"
-    style="--review-progress: %.4f%%"
+    style="--review-completed: %.4f%%; --review-learning: %.4f%%"
   >
     <div class="progress-track" aria-hidden="true">
-      <div class="progress-fill"></div>
+      <div id="bar-completed" class="progress-completed"></div>
+      <div id="bar-learning" class="progress-learning"></div>
     </div>
-  </div>""" % (total, completed, progress_percent)
+    <div class="progress-text">%s Done / %s Learning / %s Total</div>
+  </div>""" % (total, completed, completed_percent, learning_percent, completed, learning, total)
     undo_disabled = "" if can_undo else " disabled"
     page_template = """
 <main class="review-shell">
@@ -115,6 +120,7 @@ const textColor = "__TEXT_COLOR__";
 const unknownColor = "__UNKNOWN_COLOR__";
 const contextTranslationCache = new Map();
 let contextHoverTimer = null;
+let contextHideTimer = null;
 let contextHoverRequest = 0;
 let contextHoverNode = null;
 let solutionRevealed = false;
@@ -160,6 +166,10 @@ function setup() {
     span.addEventListener("mouseenter", () => scheduleContextTranslation(span));
     span.addEventListener("mouseleave", () => cancelContextTranslation(span));
   });
+  contextTranslationTooltip.addEventListener("mouseenter", () => {
+    window.clearTimeout(contextHideTimer);
+  });
+  contextTranslationTooltip.addEventListener("mouseleave", hideContextTranslationSoon);
   renderSolution();
   if (Boolean(task.hasRecall)) {
     questionTranslationText.textContent = sentenceTranslation || "Translating automatically...";
@@ -383,15 +393,24 @@ window.contextualSetUndoAvailable = (available) => {
   undo.disabled = !Boolean(available);
 };
 
-window.contextualProgressChanged = (completed, total) => {
+window.contextualProgressChanged = (completed, learning, total) => {
   const progress = document.querySelector(".session-progress");
   if (!progress || !Number(total)) {
     return;
   }
   const bounded = Math.max(0, Math.min(Number(completed) || 0, Number(total) || 0));
+  const learningBounded = Math.max(
+    0,
+    Math.min(Number(learning) || 0, (Number(total) || 0) - bounded)
+  );
   progress.setAttribute("aria-valuemax", String(total));
   progress.setAttribute("aria-valuenow", String(bounded));
-  progress.style.setProperty("--review-progress", `${(bounded / Number(total)) * 100}%`);
+  progress.style.setProperty("--review-completed", `${(bounded / Number(total)) * 100}%`);
+  progress.style.setProperty("--review-learning", `${(learningBounded / Number(total)) * 100}%`);
+  const text = progress.querySelector(".progress-text");
+  if (text) {
+    text.textContent = `${bounded} Done / ${learningBounded} Learning / ${Number(total)} Total`;
+  }
 };
 
 speakSentence.addEventListener("click", () => {
@@ -427,6 +446,9 @@ lookup.addEventListener("click", () => {
 });
 
 function scheduleContextTranslation(span) {
+  if (contextTranslationTooltip.dataset.mining === "true") {
+    return;
+  }
   window.clearTimeout(contextHoverTimer);
   contextHoverNode = span;
   const word = (span.dataset.word || span.textContent || "").trim();
@@ -456,12 +478,45 @@ function cancelContextTranslation(span) {
     return;
   }
   window.clearTimeout(contextHoverTimer);
-  contextHoverNode = null;
-  contextTranslationTooltip.hidden = true;
+  hideContextTranslationSoon();
 }
 
-function showContextTranslation(span, text, loading = false) {
-  contextTranslationTooltip.textContent = text;
+function hideContextTranslationSoon() {
+  if (contextTranslationTooltip.dataset.mining === "true") {
+    return;
+  }
+  window.clearTimeout(contextHideTimer);
+  contextHideTimer = window.setTimeout(() => {
+    contextHoverNode = null;
+    contextTranslationTooltip.hidden = true;
+  }, 350);
+}
+
+function showContextTranslation(span, text, loading = false, canMine = !loading) {
+  window.clearTimeout(contextHideTimer);
+  contextTranslationTooltip.textContent = "";
+  const meaning = document.createElement("span");
+  meaning.className = "context-translation-text";
+  meaning.textContent = text;
+  contextTranslationTooltip.appendChild(meaning);
+  if (canMine && text) {
+    const mine = document.createElement("button");
+    mine.type = "button";
+    mine.className = "mine-word";
+    mine.textContent = "Add Note";
+    mine.addEventListener("click", () => {
+      window.clearTimeout(contextHideTimer);
+      contextTranslationTooltip.dataset.mining = "true";
+      mine.disabled = true;
+      mine.textContent = "Adding...";
+      pycmd(JSON.stringify({
+        action: "mine_word",
+        word: (span.dataset.word || span.textContent || "").trim(),
+        translation: text
+      }));
+    });
+    contextTranslationTooltip.appendChild(mine);
+  }
   contextTranslationTooltip.classList.toggle("loading", loading);
   contextTranslationTooltip.hidden = false;
   const wordRect = span.getBoundingClientRect();
@@ -515,7 +570,38 @@ window.contextualTranslationFinished = (kind, requestId, sourceText, translatedT
   if (!error) {
     contextTranslationCache.set(sourceText, translatedText);
   }
-  showContextTranslation(contextHoverNode, displayText, false);
+  showContextTranslation(contextHoverNode, displayText, false, !error);
+};
+
+window.contextualMineFinished = (success, message) => {
+  delete contextTranslationTooltip.dataset.mining;
+  contextTranslationTooltip.querySelectorAll(".mine-status").forEach((node) => node.remove());
+  const mine = contextTranslationTooltip.querySelector(".mine-word");
+  if (mine) {
+    mine.disabled = Boolean(success);
+    mine.textContent = success ? "Added" : "Try Again";
+  }
+  const status = document.createElement("div");
+  status.className = success ? "mine-status success" : "mine-status error";
+  status.textContent = message || (success ? "Added." : "Could not add note.");
+  contextTranslationTooltip.appendChild(status);
+  if (success) {
+    hideContextTranslationSoon();
+  }
+};
+
+window.contextualMineUndone = (message) => {
+  delete contextTranslationTooltip.dataset.mining;
+  const mine = contextTranslationTooltip.querySelector(".mine-word");
+  if (mine) {
+    mine.disabled = false;
+    mine.textContent = "Add Note";
+  }
+  contextTranslationTooltip.querySelectorAll(".mine-status").forEach((node) => node.remove());
+  const status = document.createElement("div");
+  status.className = "mine-status";
+  status.textContent = message || "Mined note undone.";
+  contextTranslationTooltip.appendChild(status);
 };
 
 submit.addEventListener("click", () => {
@@ -1062,31 +1148,38 @@ body {
   width: 100%;
   height: 6px;
   overflow: hidden;
+  display: flex;
   border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--border) 38%, transparent);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
-.progress-fill {
+.progress-completed,
+.progress-learning {
   position: relative;
-  width: var(--review-progress);
   height: 100%;
   min-width: 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), var(--target));
-  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
   transition: width 220ms ease-out;
 }
 
-.progress-fill::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 18px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42));
+.progress-completed {
+  width: var(--review-completed);
+  background: #4caf50;
+}
+
+.progress-learning {
+  width: var(--review-learning);
+  background: #f59e0b;
+}
+
+.progress-text {
+  margin-top: 5px;
+  color: var(--muted) !important;
+  -webkit-text-fill-color: var(--muted) !important;
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
 }
 
 .sentence {
@@ -1188,10 +1281,29 @@ body {
   color: var(--fg) !important;
   -webkit-text-fill-color: var(--fg) !important;
   box-shadow: 0 5px 18px rgba(0, 0, 0, 0.22);
+  pointer-events: auto;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
-  pointer-events: none;
+}
+
+.context-translation-text {
+  display: block;
+}
+
+.mine-word {
+  margin-top: 7px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.mine-status {
+  max-width: 280px;
+  margin-top: 6px;
+  color: var(--muted) !important;
+  -webkit-text-fill-color: var(--muted) !important;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .context-translation-tooltip.loading {

@@ -43,6 +43,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog.review_history = []
         dialog.today_goal_card_ids = set()
         dialog.answered_card_ids = set()
+        dialog.learning_card_ids = set()
         dialog._dark_mode = lambda: False
         dialog._set_html = lambda _html: None
         spoken = []
@@ -342,6 +343,7 @@ class ReviewerBridgeTests(unittest.TestCase):
                 unknown_card_ids=[10],
                 known_card_ids=[20],
                 completed_card_ids=[20],
+                learning_card_ids=[10],
             )
 
             dialog._submit_answer(["review"])
@@ -349,9 +351,10 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.answer_review_task = original
 
         self.assertEqual(dialog.answered_card_ids, {20})
+        self.assertEqual(dialog.learning_card_ids, {10})
         self.assertEqual(dialog.review_history[0][1], [10, 20])
         self.assertEqual(dialog._session_forgotten_words, [["review"]])
-        self.assertIn("window.contextualProgressChanged(1, 2);", scripts)
+        self.assertIn("window.contextualProgressChanged(1, 1, 2);", scripts)
         self.assertIn("window.contextualSetUndoAvailable(true);", scripts)
         self.assertIsNone(dialog._due_cards_cache)
         self.assertEqual(loads, [True])
@@ -362,6 +365,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog.mw = object()
         dialog.config = normalize_config({})
         dialog.answered_card_ids = set()
+        dialog.learning_card_ids = set()
         dialog.review_history = []
         dialog._load_next_task = lambda refresh_due_cards=False: None
 
@@ -372,12 +376,14 @@ class ReviewerBridgeTests(unittest.TestCase):
                 unknown_card_ids=[],
                 known_card_ids=[10],
                 completed_card_ids=[],
+                learning_card_ids=[10],
             )
             dialog._submit_answer([])
         finally:
             reviewer.answer_review_task = original
 
         self.assertEqual(dialog.answered_card_ids, set())
+        self.assertEqual(dialog.learning_card_ids, {10})
         self.assertEqual(dialog.review_history[0][1], [10])
 
     def test_undo_restores_previous_contextual_sentence(self) -> None:
@@ -418,6 +424,55 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog._selection_generation, 5)
         self.assertFalse(dialog._loading)
         self.assertIn("review", html[-1])
+
+    def test_undo_restores_a_cards_previous_learning_progress_state(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
+        dialog.review_history = [(task, [10], None, set(), {10})]
+        dialog.answered_card_ids = {10}
+        dialog.learning_card_ids = set()
+        dialog.today_goal_card_ids = {10}
+        dialog.active_task = None
+        dialog._selection_generation = 0
+        dialog._loading = False
+        dialog._session_results = []
+        dialog._session_forgotten_words = []
+        dialog.web = SimpleNamespace(eval=lambda _script: None)
+        dialog._render_task = lambda restored: setattr(dialog, "active_task", restored)
+        dialog.mw = SimpleNamespace(onUndo=lambda: None)
+
+        dialog._undo_last_review()
+
+        self.assertEqual(dialog.answered_card_ids, set())
+        self.assertEqual(dialog.learning_card_ids, {10})
+        self.assertEqual(dialog._today_progress(), (0, 1, 1))
+
+    def test_ctrl_z_undoes_the_latest_mined_note_before_review_history(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        marker = reviewer.AnkiUndoMarker(last_step=55, label="Add Contextual Note")
+        dialog._mining_undo_markers = [marker]
+        dialog.review_history = []
+        scripts = []
+        dialog.web = SimpleNamespace(eval=scripts.append)
+
+        class FakeCollection:
+            def __init__(self) -> None:
+                self.undo_called = False
+
+            def undo_status(self):
+                return SimpleNamespace(last_step=55, undo="Add Contextual Note")
+
+            def undo(self):
+                self.undo_called = True
+
+        collection = FakeCollection()
+        dialog.mw = SimpleNamespace(col=collection, reset=lambda: None)
+
+        dialog._undo_last_review()
+
+        self.assertTrue(collection.undo_called)
+        self.assertEqual(dialog._mining_undo_markers, [])
+        self.assertIn("window.contextualMineUndone", scripts[0])
 
     def test_undo_refuses_to_revert_a_newer_unrelated_anki_action(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -507,12 +562,13 @@ class ReviewerBridgeTests(unittest.TestCase):
         task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
         dialog.today_goal_card_ids = {10, 20, 30}
         dialog.answered_card_ids = {10, 20, 99}
+        dialog.learning_card_ids = {30, 99}
         dialog.review_history = [
             (task, [10, 99], None),
             (task, [20], None),
         ]
 
-        self.assertEqual(dialog._today_progress(), (2, 3))
+        self.assertEqual(dialog._today_progress(), (2, 1, 3))
 
     def test_session_summary_counts_sentences_and_answer_results(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -774,7 +830,7 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         self.assertEqual(migration_calls, [dialog.db_path])
 
-    def test_fresh_due_search_adds_newly_eligible_cards_to_lesson_goal(self) -> None:
+    def test_fresh_due_search_keeps_the_session_start_goal_fixed(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog.db_path = SimpleNamespace(exists=lambda: True)
         dialog.config = normalize_config({})
@@ -815,7 +871,7 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.collect_due_cards = original_collect
             reviewer.select_review_task = original_select
 
-        self.assertEqual(dialog.today_goal_card_ids, {7, 8, 9})
+        self.assertEqual(dialog.today_goal_card_ids, {7, 8})
 
     def test_cached_again_card_waits_for_fresh_anki_due_search(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)

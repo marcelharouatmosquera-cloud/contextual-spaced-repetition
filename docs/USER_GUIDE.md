@@ -177,13 +177,24 @@ Click `Grade & Next` to grade the sentence:
 
 Click the star in the top-right corner to save the current sentence. Favorite
 Sentences in the Contextual Review tools menu lets you revisit saved sentences
-for the active language deck and remove entries you no longer need.
+for the active language deck, remove entries you no longer need, or export all
+visible favorites to a dedicated Anki deck.
+
+Hover over a non-target word to see its automatic translation. Choose `Add Note`
+inside that popup to create a note with the active card's exact note type and
+deck. The configured target and translation fields are filled, the sentence is
+stored in an example/context field when available, and target-language audio is
+attached by default when the note type has an audio field. All templates on the
+note type are generated automatically and the resulting New cards are moved to
+the front with Anki's native reposition operation.
 
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.
 Press `Ctrl+Z` to undo the last contextual review and return to its sentence.
 Ctrl+Z remains available while the next sentence is being found, and undo also
-restores the progress bar immediately.
+restores the progress bar immediately. Green means finished for today, orange
+means the card is waiting in an intraday learning/relearning step, and gray is
+the part of the initial session goal still remaining.
 
 Contextual Review schedules the linked cards as a batch, so a sentence can
 cover multiple due words without being limited to Anki's next queued card.

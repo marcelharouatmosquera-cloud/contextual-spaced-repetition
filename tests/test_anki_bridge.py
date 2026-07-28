@@ -1029,6 +1029,7 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual(summary.answered_card_ids, [10, 20])
         self.assertEqual(summary.unknown_card_ids, [10])
         self.assertEqual(summary.completed_card_ids, [20])
+        self.assertEqual(summary.learning_card_ids, [10])
         self.assertEqual(mw.col._backend.calls, [([10], 0), ([20], 2)])
         self.assertEqual(mw.col.undo_names, ["Contextual Review"])
         self.assertEqual(mw.col.merged_entries, [42, 42])

@@ -66,7 +66,8 @@ class ConfigTests(unittest.TestCase):
         config = normalize_config({})
 
         self.assertEqual(config.matching_mode, "lemma_family")
-        self.assertEqual((config.min_sentence_words, config.max_sentence_words), (4, 15))
+        self.assertEqual((config.min_sentence_words, config.max_sentence_words), (4, 12))
+        self.assertTrue(config.auto_mine_tts)
         self.assertTrue(config.include_due_cards)
         self.assertFalse(config.include_new_cards)
         self.assertEqual(config.max_new_cards, 10)
