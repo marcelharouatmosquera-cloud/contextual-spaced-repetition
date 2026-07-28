@@ -14,6 +14,7 @@ from .types import ReviewTask
 
 FAVORITES_DECK_NAME = "Contextual Review Favorites"
 FAVORITES_NOTETYPE_NAME = "Contextual Review Favorite"
+MINED_NOTE_TAG = "mined-word"
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,8 @@ def create_mined_note(
             note[audio_field] = "[sound:%s]" % media_name
             audio_added = True
 
+    _add_note_tag(note, MINED_NOTE_TAG)
+
     new_limit_increase = 0
     undo_entry = _begin_undo(col, "Add Contextual Note")
     try:
@@ -123,6 +126,7 @@ def create_mined_note(
         raise
 
     _refresh(mw)
+    _update_undo_actions(mw)
     return MiningResult(int(note.id), card_ids, audio_added, new_limit_increase)
 
 
@@ -403,6 +407,16 @@ def _add_media_file(col: Any, path: Path) -> str:
     return str(add_file(str(path)))
 
 
+def _add_note_tag(note: Any, tag: str) -> None:
+    add_tag = getattr(note, "add_tag", None)
+    if callable(add_tag):
+        add_tag(str(tag))
+        return
+    tags = getattr(note, "tags", None)
+    if isinstance(tags, list) and str(tag) not in tags:
+        tags.append(str(tag))
+
+
 def _reposition_new_cards_first(col: Any, card_ids: Sequence[int]) -> None:
     reposition = getattr(getattr(col, "sched", None), "reposition_new_cards", None)
     if not callable(reposition):
@@ -471,6 +485,17 @@ def _refresh(mw: Any) -> None:
     reset = getattr(mw, "reset", None)
     if callable(reset):
         reset()
+
+
+def _update_undo_actions(mw: Any) -> None:
+    update = getattr(mw, "update_undo_actions", None)
+    if callable(update):
+        try:
+            update()
+        except Exception:
+            # The note is already committed and undoable. A stale menu label
+            # must never turn a successful creation into a reported failure.
+            pass
 
 
 def _deck_id_for_name(col: Any, deck_name: str) -> int:

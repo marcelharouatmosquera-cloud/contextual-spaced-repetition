@@ -89,6 +89,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             Tuple[ReviewTask, List[int], ReviewUndoHandle, Set[int], Set[int]]
         ] = []
         self._mining_undo_markers: List[AnkiUndoMarker] = []
+        self._mined_card_ids_by_undo_step: Dict[int, Tuple[int, ...]] = {}
+        self._queued_mined_due_card_batches: List[Tuple[DueCard, ...]] = []
         self._session_results: List[Tuple[int, int]] = []
         self._session_forgotten_words: List[List[str]] = []
         self._session_summary_shown = False
@@ -108,6 +110,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._started = False
         self._selection_generation = 0
         self._due_cards_cache: Optional[Tuple[DueCard, ...]] = None
+        self._due_cards_cache_is_mined = False
         self._database_migration_pending = True
 
         self.web = AnkiWebView()
@@ -197,12 +200,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
         due_started = time.perf_counter()
         cache_hit = not refresh_due_cards and getattr(self, "_due_cards_cache", None) is not None
+        cache_is_mined = cache_hit and bool(
+            getattr(self, "_due_cards_cache_is_mined", False)
+        )
         try:
             if cache_hit:
                 collected_due_cards = list(self._due_cards_cache or ())
             else:
                 collected_due_cards = collect_due_cards(self.mw, self.config)
                 self._due_cards_cache = tuple(collected_due_cards)
+                self._due_cards_cache_is_mined = False
             if not cache_hit:
                 full_today_ids = getattr(collected_due_cards, "today_card_ids", None)
                 collected_today_ids = set(
@@ -281,7 +288,10 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return
 
-        shown_sentence_ids = set(self.shown_sentence_ids)
+        # A mined word may only exist in the sentence it was mined from. Prefer
+        # a fresh sentence through recent-history soft avoidance, but allow the
+        # original sentence as a fallback for this one-card follow-up.
+        shown_sentence_ids = set() if cache_is_mined else set(self.shown_sentence_ids)
         recent_sentence_ids = set(self.recent_sentence_ids)
         due_cards = tuple(due_cards)
         generation = getattr(self, "_selection_generation", 0) + 1
@@ -422,6 +432,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             if retry_with_fresh_cards:
                 append_debug_log("review_task_selection_retry_with_fresh_cards")
                 self._due_cards_cache = None
+                self._due_cards_cache_is_mined = False
                 self._load_next_task(refresh_due_cards=True)
                 return
             self.active_task = None
@@ -579,6 +590,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self.active_task = task
             self._render_task(task)
             return
+        if self._load_queued_mined_task():
+            return
         # Re-run Anki's due search after each sentence. This drops cards buried
         # since the window opened and admits intraday steps as soon as their
         # scheduler delay has actually elapsed.
@@ -588,12 +601,18 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
     def _undo_last_review(self) -> None:
         mining_markers = getattr(self, "_mining_undo_markers", [])
         if mining_markers and _anki_undo_marker_is_current(self.mw, mining_markers[-1]):
+            marker = mining_markers[-1]
             try:
                 _undo_marked_anki_operation(self.mw, mining_markers.pop())
             except Exception as exc:
                 self._notify_mining_undone("Could not undo the mined note: %s" % exc)
                 return
-            self._notify_mining_undone("Mined note undone.")
+            queued_ids = getattr(self, "_mined_card_ids_by_undo_step", {}).pop(
+                marker.last_step,
+                (),
+            )
+            self._remove_queued_mined_cards(queued_ids)
+            self._notify_mining_undone("The newly added word was removed from Anki.")
             return
         if not self.review_history:
             return
@@ -750,16 +769,30 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                         markers = []
                         self._mining_undo_markers = markers
                     markers.append(marker)
-                message = "Added note with %s card%s at the front of the New queue." % (
+                queued_card_ids = self._queue_mined_note_for_review(result)
+                if marker is not None:
+                    mapping = getattr(self, "_mined_card_ids_by_undo_step", None)
+                    if mapping is None:
+                        mapping = {}
+                        self._mined_card_ids_by_undo_step = mapping
+                    mapping[marker.last_step] = tuple(queued_card_ids)
+                message = "'%s' was added successfully. Anki created %s card%s at the front of the New queue." % (
+                    target_word,
                     len(result.card_ids),
                     "" if len(result.card_ids) == 1 else "s",
                 )
+                if queued_card_ids:
+                    message += (
+                        " After you grade this sentence, the new word will get its own "
+                        "contextual sentence."
+                    )
                 if result.new_limit_increase:
                     message += " Today's New limit increased by %s." % result.new_limit_increase
                 if audio_error:
                     message += " Audio was unavailable."
                 elif audio_path is not None and not result.audio_added:
                     message += " The note type has no audio field, so no audio was attached."
+                message += " Press Ctrl+Z now if you want to undo it."
                 self._notify_mining_finished(True, message)
             except Exception as exc:
                 self._notify_mining_finished(False, str(exc))
@@ -791,6 +824,80 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             create(synthesize(), "")
         except Exception as exc:
             create(None, _friendly_tts_error(exc))
+
+    def _queue_mined_note_for_review(self, result: Any) -> Tuple[int, ...]:
+        """Queue one exact mined card when ordinary New-card study is disabled."""
+        if bool(getattr(self.config, "include_new_cards", False)):
+            return ()
+        card_ids = tuple(int(card_id) for card_id in (getattr(result, "card_ids", ()) or ()))
+        note_id = int(getattr(result, "note_id", 0) or 0)
+        if not card_ids or not note_id:
+            return ()
+        forced_config = replace(
+            self.config,
+            deck_scope="all",
+            custom_search_query="nid:%s" % note_id,
+            include_due_cards=False,
+            include_new_cards=True,
+            include_learning_cards=False,
+            future_due_days=0,
+            max_due_cards=len(card_ids),
+            max_new_cards=len(card_ids),
+        )
+        try:
+            candidates = list(collect_due_cards(self.mw, forced_config))
+        except Exception as exc:
+            # Note creation has already succeeded. Follow-up selection is a
+            # convenience and must not misreport the committed note as failed.
+            append_debug_log(
+                "mined_note_follow_up_queue_error",
+                note_id=note_id,
+                card_ids=list(card_ids),
+                error=str(exc),
+            )
+            return ()
+        generated_card_ids = set(card_ids)
+        selected_card_id = next(
+            (
+                int(card.card_id)
+                for card in candidates
+                if int(card.card_id) in generated_card_ids
+            ),
+            0,
+        )
+        if not selected_card_id:
+            return ()
+        batch = tuple(
+            card for card in candidates if int(card.card_id) == selected_card_id
+        )
+        if not batch:
+            return ()
+        batches = getattr(self, "_queued_mined_due_card_batches", None)
+        if batches is None:
+            batches = []
+            self._queued_mined_due_card_batches = batches
+        batches.append(batch)
+        return (selected_card_id,)
+
+    def _load_queued_mined_task(self) -> bool:
+        batches = getattr(self, "_queued_mined_due_card_batches", [])
+        if not batches:
+            return False
+        self._due_cards_cache = tuple(batches.pop(0))
+        self._due_cards_cache_is_mined = True
+        self._load_next_task()
+        return True
+
+    def _remove_queued_mined_cards(self, card_ids: Iterable[int]) -> None:
+        removed_ids = {int(card_id) for card_id in card_ids}
+        if not removed_ids:
+            return
+        batches = getattr(self, "_queued_mined_due_card_batches", [])
+        self._queued_mined_due_card_batches = [
+            batch
+            for batch in batches
+            if not any(int(card.card_id) in removed_ids for card in batch)
+        ]
 
     def _notify_mining_finished(self, success: bool, message: str) -> None:
         try:

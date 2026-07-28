@@ -194,6 +194,13 @@ increase is automatic: one generated card adds one slot, while a note type that
 actually generates forward and reverse cards adds two slots. The adjustment is
 for today only.
 
+Mined notes receive the `mined-word` tag. When `Learn New Cards` is disabled,
+the new word is still queued once inside Contextual Review by its exact card ID.
+After the current sentence is graded, it gets a sentence containing only that
+new card; unrelated New cards remain disabled. Recognition and recall siblings
+are never mixed into the same sentence. A confirmation banner reports the word
+and generated-card count, and Ctrl+Z immediately removes the new note.
+
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.
 Press `Ctrl+Z` to undo the last contextual review and return to its sentence.

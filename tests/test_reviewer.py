@@ -246,6 +246,123 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertIsNone(dialog._due_cards_cache)
         self.assertEqual(loads, [True])
 
+    def test_mined_note_queues_only_one_exact_card_when_new_study_is_disabled(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config(
+            {
+                "include_new_cards": False,
+                "included_card_templates": ["Card 1"],
+                "recall_templates": ["Card 2"],
+            }
+        )
+        dialog.mw = object()
+        dialog._queued_mined_due_card_batches = []
+        candidates = [
+            DueCard(
+                card_id=20,
+                target_word="lernen",
+                lemma="lernen",
+                direction="recognition",
+            ),
+            DueCard(
+                card_id=21,
+                target_word="lernen",
+                lemma="lernen",
+                direction="recall",
+            ),
+        ]
+        captured = []
+        original = reviewer.collect_due_cards
+        reviewer.collect_due_cards = lambda mw, config: captured.append(config) or candidates
+        try:
+            queued = dialog._queue_mined_note_for_review(
+                SimpleNamespace(note_id=99, card_ids=(20, 21))
+            )
+        finally:
+            reviewer.collect_due_cards = original
+
+        self.assertEqual(queued, (20,))
+        self.assertEqual(
+            [card.card_id for card in dialog._queued_mined_due_card_batches[0]],
+            [20],
+        )
+        self.assertEqual(captured[0].custom_search_query, "nid:99")
+        self.assertTrue(captured[0].include_new_cards)
+        self.assertFalse(captured[0].include_due_cards)
+
+    def test_mined_note_uses_normal_new_queue_when_new_study_is_enabled(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({"include_new_cards": True})
+        dialog._queued_mined_due_card_batches = []
+
+        queued = dialog._queue_mined_note_for_review(
+            SimpleNamespace(note_id=99, card_ids=(20, 21))
+        )
+
+        self.assertEqual(queued, ())
+        self.assertEqual(dialog._queued_mined_due_card_batches, [])
+
+    def test_queued_mined_card_becomes_the_only_next_selection_batch(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        mined = DueCard(card_id=20, target_word="lernen", lemma="lernen")
+        dialog._queued_mined_due_card_batches = [(mined,)]
+        loads = []
+        dialog._load_next_task = lambda: loads.append(True)
+
+        loaded = dialog._load_queued_mined_task()
+
+        self.assertTrue(loaded)
+        self.assertEqual(dialog._due_cards_cache, (mined,))
+        self.assertTrue(dialog._due_cards_cache_is_mined)
+        self.assertEqual(loads, [True])
+
+    def test_mined_follow_up_can_reuse_the_sentence_it_was_mined_from(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.db_path = SimpleNamespace(exists=lambda: True)
+        dialog.config = normalize_config({})
+        dialog.shown_sentence_ids = {7}
+        dialog.recent_sentence_ids = {7}
+        dialog.answered_card_ids = set()
+        dialog.review_history = []
+        dialog.active_task = None
+        dialog._loading = False
+        dialog._due_cards_cache = (
+            DueCard(card_id=20, target_word="lernen", lemma="lernen"),
+        )
+        dialog._due_cards_cache_is_mined = True
+        dialog._selection_generation = 0
+        dialog._today_goal_initialized = True
+        dialog.today_goal_card_ids = set()
+        dialog._dark_mode = lambda: False
+        dialog._set_html = lambda _html: None
+        dialog._mark_sentence_shown = lambda _sentence_id: None
+        rendered = []
+        dialog._render_task = rendered.append
+        dialog.mw = object()
+        task = ReviewTask(7, "en", "We learn.", None, [], {"lernen": [20]})
+        calls = []
+        original = reviewer.select_review_task
+        reviewer.select_review_task = lambda *args, **kwargs: (
+            calls.append((args[3], kwargs.get("soft_avoid_sentence_ids"))) or task
+        )
+        try:
+            dialog._load_next_task()
+        finally:
+            reviewer.select_review_task = original
+
+        self.assertEqual(calls, [(set(), {7})])
+        self.assertEqual(rendered, [task])
+
+    def test_undo_removes_the_mined_card_from_the_follow_up_queue(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        kept = DueCard(card_id=10, target_word="keep", lemma="keep")
+        removed = DueCard(card_id=20, target_word="remove", lemma="remove")
+        dialog._queued_mined_due_card_batches = [(kept,), (removed,)]
+
+        dialog._remove_queued_mined_cards((20,))
+
+        self.assertEqual(dialog._queued_mined_due_card_batches, [(kept,)])
+
     def test_grade_failure_screen_has_recovery_actions(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog.active_task = ReviewTask(

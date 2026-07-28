@@ -29,6 +29,7 @@ Use this before publishing a build to AnkiWeb.
 - Confirm target and solution field dropdowns discover fields from the selected deck.
 - Add, remove, reorder, and relabel solution fields; verify text, image, and audio display modes.
 - Confirm an audio field can be played manually and that auto-play triggers at most one audio item when the solution opens.
+- With Learn New Cards disabled, mine a word and confirm the success banner, `mined-word` tag, native undo label, and one-card contextual follow-up after grading the current sentence.
 - Confirm the Tools menu contains only Start Review, Favorite Sentences, Settings, Quick Guide, and Diagnostics.
 - Confirm Basic Setup contains auto-configuration and the Sentence Library without requiring a separate setup wizard.
 - Confirm custom sentence import, word-form import, and full database deletion remain available in Advanced / Nerd Settings.

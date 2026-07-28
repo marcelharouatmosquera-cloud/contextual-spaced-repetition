@@ -233,6 +233,9 @@ class WebTests(unittest.TestCase):
         self.assertIn('action: "mine_word"', html)
         self.assertIn("window.contextualMineFinished", html)
         self.assertIn("window.contextualMineUndone", html)
+        self.assertIn('id="mine-toast"', html)
+        self.assertIn("showMineToast(success, status.textContent)", html)
+        self.assertIn("Word added successfully.", html)
 
     def test_ctrl_z_routes_to_contextual_undo(self) -> None:
         html = render_task_html(self._task())

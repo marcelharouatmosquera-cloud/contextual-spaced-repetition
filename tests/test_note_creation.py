@@ -15,9 +15,13 @@ class FakeNote(dict):
         super().__init__((field["name"], "") for field in notetype["flds"])
         self._notetype = notetype
         self.id = 0
+        self.tags = []
 
     def note_type(self):
         return self._notetype
+
+    def add_tag(self, tag):
+        self.tags.append(tag)
 
 
 class FakeDecks:
@@ -147,8 +151,13 @@ class FakeCollection:
 class NoteCreationTests(unittest.TestCase):
     def _mw(self):
         collection = FakeCollection()
-        mw = SimpleNamespace(col=collection, reset_called=False)
+        mw = SimpleNamespace(
+            col=collection,
+            reset_called=False,
+            undo_actions_updated=False,
+        )
         mw.reset = lambda: setattr(mw, "reset_called", True)
+        mw.update_undo_actions = lambda: setattr(mw, "undo_actions_updated", True)
         return mw
 
     def test_mining_uses_source_notetype_generates_all_templates_and_repositions_natively(self):
@@ -183,6 +192,7 @@ class NoteCreationTests(unittest.TestCase):
         self.assertEqual(note["English"], "dog")
         self.assertEqual(note["Example Sentence"], "Der Hund schläft.")
         self.assertEqual(note["Audio"], "[sound:mined.mp3]")
+        self.assertEqual(note.tags, ["mined-word"])
         self.assertEqual(len(result.card_ids), 2)
         self.assertEqual(result.new_limit_increase, 0)
         self.assertEqual(
@@ -200,6 +210,7 @@ class NoteCreationTests(unittest.TestCase):
         self.assertEqual(mw.col.undo_labels, ["Add Contextual Note"])
         self.assertEqual(mw.col.merged, [42, 42])
         self.assertTrue(mw.reset_called)
+        self.assertTrue(mw.undo_actions_updated)
 
     def test_mining_increases_today_limit_by_actual_generated_card_count(self):
         mw = self._mw()

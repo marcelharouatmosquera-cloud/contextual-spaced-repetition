@@ -75,6 +75,7 @@ def render_task_html(
     <button id="retry-sentence-translation" class="compact-action" type="button">Retry Translation</button>
   </section>
   <div id="context-translation-tooltip" class="context-translation-tooltip" role="status" hidden></div>
+  <div id="mine-toast" class="mine-toast" role="status" aria-live="polite" hidden></div>
   <section class="sentence-audio-controls">
     <button id="speak-sentence" class="compact-action" type="button" title="Read this sentence using an online voice">&#x1F50A; Read sentence</button>
     <span id="tts-status" class="tts-status" aria-live="polite"></span>
@@ -108,6 +109,7 @@ const questionTranslationNote = document.getElementById("question-translation-no
 const translationRetryControls = document.getElementById("translation-retry-controls");
 const retrySentenceTranslation = document.getElementById("retry-sentence-translation");
 const contextTranslationTooltip = document.getElementById("context-translation-tooltip");
+const mineToast = document.getElementById("mine-toast");
 const solution = document.getElementById("solution");
 const translation = document.getElementById("translation");
 const translationNote = document.getElementById("translation-note");
@@ -128,6 +130,7 @@ let contextHoverTimer = null;
 let contextHideTimer = null;
 let contextHoverRequest = 0;
 let contextHoverNode = null;
+let mineToastTimer = null;
 const CONTEXT_HOVER_DELAY_MS = 80;
 let solutionRevealed = false;
 let sentenceTranslation = task.translation || "";
@@ -710,6 +713,7 @@ window.contextualMineFinished = (success, message) => {
   status.className = success ? "mine-status success" : "mine-status error";
   status.textContent = message || (success ? "Added." : "Could not add note.");
   contextTranslationTooltip.appendChild(status);
+  showMineToast(success, status.textContent);
   if (success) {
     hideContextTranslationSoon();
   }
@@ -727,7 +731,19 @@ window.contextualMineUndone = (message) => {
   status.className = "mine-status";
   status.textContent = message || "Mined note undone.";
   contextTranslationTooltip.appendChild(status);
+  showMineToast(true, status.textContent);
 };
+
+function showMineToast(success, message) {
+  window.clearTimeout(mineToastTimer);
+  mineToast.classList.toggle("success", Boolean(success));
+  mineToast.classList.toggle("error", !success);
+  mineToast.textContent = message || (success ? "Word added successfully." : "Could not add word.");
+  mineToast.hidden = false;
+  mineToastTimer = window.setTimeout(() => {
+    mineToast.hidden = true;
+  }, success ? 7000 : 10000);
+}
 
 submit.addEventListener("click", () => {
   submitAnswer();
@@ -1475,6 +1491,34 @@ body {
   -webkit-text-fill-color: var(--muted) !important;
   font-size: 11px;
   line-height: 1.3;
+}
+
+.mine-toast {
+  position: fixed;
+  z-index: 30;
+  top: 16px;
+  left: 50%;
+  width: min(620px, calc(100vw - 32px));
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--button-bg) !important;
+  color: var(--fg) !important;
+  -webkit-text-fill-color: var(--fg) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.mine-toast.success {
+  border-color: #4caf50;
+}
+
+.mine-toast.error {
+  border-color: #d9534f;
 }
 
 .context-translation-tooltip.loading {

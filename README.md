@@ -125,6 +125,10 @@ Automatic word audio is enabled by default and can be disabled in Advanced /
 Nerd Settings. The same tab has an optional `Increase today's New limit for
 mined cards` switch. When enabled, it adds one temporary New-card slot per card
 Anki actually generates, so a forward-and-reverse note normally adds two.
+Every mined note is tagged `mined-word`. If `Learn New Cards` is disabled, the
+add-on queues only the newly mined card for its own contextual sentence after
+the current sentence is graded; it does not open the rest of the New queue.
+A visible success banner confirms the word and card count and explains Ctrl+Z.
 
 Clicked target cards are answered as `Again`. Unclicked target cards are
 answered as `Good`. The add-on schedules those linked cards as a contextual
