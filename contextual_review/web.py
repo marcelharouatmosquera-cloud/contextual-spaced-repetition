@@ -64,6 +64,7 @@ def render_task_html(
   <section id="question-translation" class="question-translation" hidden>
     <h2>Sentence Translation</h2>
     <div id="question-translation-text" class="translation"></div>
+    <p id="question-translation-note" class="translation-note" hidden></p>
   </section>
   <div id="context-translation-tooltip" class="context-translation-tooltip" role="status" hidden></div>
   <section class="sentence-audio-controls">
@@ -74,7 +75,7 @@ def render_task_html(
     <div class="solution-block">
       <h2>Sentence Translation</h2>
       <div id="translation" class="translation"></div>
-      <button id="translate-sentence" class="inline-action" type="button" hidden>Translate Sentence</button>
+      <p id="translation-note" class="translation-note" hidden></p>
     </div>
     <div id="target-word-section" class="solution-block">
       <h2>Target Words</h2>
@@ -95,10 +96,11 @@ const reviewGuidance = document.getElementById("review-guidance");
 const sentence = document.getElementById("sentence");
 const questionTranslation = document.getElementById("question-translation");
 const questionTranslationText = document.getElementById("question-translation-text");
+const questionTranslationNote = document.getElementById("question-translation-note");
 const contextTranslationTooltip = document.getElementById("context-translation-tooltip");
 const solution = document.getElementById("solution");
 const translation = document.getElementById("translation");
-const translateSentence = document.getElementById("translate-sentence");
+const translationNote = document.getElementById("translation-note");
 const targetWordSection = document.getElementById("target-word-section");
 const targetWords = document.getElementById("target-words");
 const showSolution = document.getElementById("show-solution");
@@ -116,6 +118,7 @@ let contextHoverTimer = null;
 let contextHoverRequest = 0;
 let contextHoverNode = null;
 let solutionRevealed = false;
+let sentenceTranslation = task.translation || "";
 
 function forceReadable(node, color) {
   node.style.setProperty("color", color, "important");
@@ -159,11 +162,14 @@ function setup() {
   });
   renderSolution();
   if (Boolean(task.hasRecall)) {
-    questionTranslationText.textContent = task.translation || "No stored sentence translation.";
+    questionTranslationText.textContent = sentenceTranslation || "Translating automatically...";
     questionTranslation.hidden = false;
     speakSentence.disabled = true;
     speakSentence.setAttribute("aria-disabled", "true");
     ttsStatus.textContent = "Available after Show Solution";
+  }
+  if (!sentenceTranslation) {
+    requestAutomaticSentenceTranslation();
   }
   syncReviewControls();
 }
@@ -198,10 +204,16 @@ function configureTargetAccessibility(span) {
 }
 
 function renderSolution() {
-  const hasTranslation = Boolean(task.translation);
-  translation.textContent = hasTranslation ? task.translation : "No stored sentence translation.";
-  translateSentence.hidden = hasTranslation;
+  translation.textContent = sentenceTranslation || "Translating automatically...";
   renderTargetWords();
+}
+
+function requestAutomaticSentenceTranslation() {
+  pycmd(JSON.stringify({
+    action: "translate_sentence",
+    sentence: task.sentenceText || "",
+    request_id: 0
+  }));
 }
 
 function renderTargetWords() {
@@ -361,6 +373,27 @@ window.contextualFavoriteChanged = (saved, error) => {
   favorite.title = saved ? "Remove sentence from favorites" : "Save sentence to favorites";
 };
 
+window.contextualSelectionPending = () => {
+  submit.disabled = true;
+  showSolution.disabled = true;
+  selectionSummary.textContent = "Finding the next sentence... Ctrl+Z is still available.";
+};
+
+window.contextualSetUndoAvailable = (available) => {
+  undo.disabled = !Boolean(available);
+};
+
+window.contextualProgressChanged = (completed, total) => {
+  const progress = document.querySelector(".session-progress");
+  if (!progress || !Number(total)) {
+    return;
+  }
+  const bounded = Math.max(0, Math.min(Number(completed) || 0, Number(total) || 0));
+  progress.setAttribute("aria-valuemax", String(total));
+  progress.setAttribute("aria-valuenow", String(bounded));
+  progress.style.setProperty("--review-progress", `${(bounded / Number(total)) * 100}%`);
+};
+
 speakSentence.addEventListener("click", () => {
   if (speakSentence.disabled) {
     return;
@@ -391,19 +424,6 @@ lookup.addEventListener("click", () => {
   if (unique.length) {
     pycmd(JSON.stringify({ action: "lookup", words: unique }));
   }
-});
-
-translateSentence.addEventListener("click", () => {
-  if (translateSentence.disabled) {
-    return;
-  }
-  translateSentence.disabled = true;
-  translateSentence.textContent = "Translating…";
-  pycmd(JSON.stringify({
-    action: "translate_sentence",
-    sentence: task.sentenceText || "",
-    request_id: 0
-  }));
 });
 
 function scheduleContextTranslation(span) {
@@ -460,14 +480,25 @@ function showContextTranslation(span, text, loading = false) {
 
 window.contextualTranslationFinished = (kind, requestId, sourceText, translatedText, error) => {
   if (kind === "sentence") {
-    translateSentence.disabled = false;
-    translateSentence.textContent = error ? "Try Translation Again" : "Translate Sentence";
     if (error) {
       translation.textContent = error;
-      translateSentence.hidden = false;
+      translationNote.textContent = "Automatic translation unavailable.";
+      translationNote.hidden = false;
+      if (Boolean(task.hasRecall)) {
+        questionTranslationText.textContent = error;
+        questionTranslationNote.textContent = "Automatic translation unavailable.";
+        questionTranslationNote.hidden = false;
+      }
     } else {
-      translation.textContent = translatedText;
-      translateSentence.hidden = true;
+      sentenceTranslation = translatedText;
+      translation.textContent = sentenceTranslation;
+      translationNote.textContent = "Automatically translated - may contain mistakes.";
+      translationNote.hidden = false;
+      if (Boolean(task.hasRecall)) {
+        questionTranslationText.textContent = sentenceTranslation;
+        questionTranslationNote.textContent = "Automatically translated - may contain mistakes.";
+        questionTranslationNote.hidden = false;
+      }
     }
     return;
   }
@@ -1198,6 +1229,13 @@ body {
 
 .question-translation {
   max-width: 980px;
+}
+
+.translation-note {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .target-words {

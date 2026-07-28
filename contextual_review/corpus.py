@@ -288,6 +288,7 @@ def select_review_task(
     query_term_limit: int = 40,
     matching_mode: str = "exact_form",
     soft_avoid_sentence_ids: Optional[Set[int]] = None,
+    _excluded_anchor_keys: Optional[Set[str]] = None,
 ) -> Optional[ReviewTask]:
     conn = open_review_database(db_path)
     try:
@@ -297,11 +298,20 @@ def select_review_task(
         expansions = _query_expansions(conn, due_by_key, matching_mode)
         if not expansions:
             return None
+        excluded_anchor_keys = set(_excluded_anchor_keys or ())
+        anchor_key = _greedy_anchor_key(due_by_key, excluded_anchor_keys)
+        if not anchor_key:
+            return None
+        anchor_expansions = [
+            expansion for expansion in expansions if expansion.base_key == anchor_key
+        ]
+        if not anchor_expansions:
+            return None
 
         rows = _candidate_rows(
             conn,
             due_by_key,
-            expansions,
+            anchor_expansions,
             language_match_codes(language),
             int(candidate_limit),
             int(query_term_limit),
@@ -337,15 +347,6 @@ def select_review_task(
             matched = _matched_base_keys(sentence_keys, expansions)
         if not matched:
             continue
-        if (
-            _matched_cards_include_recall(matched, due_by_key)
-            and not str(row["translation"] or "").strip()
-        ):
-            # A recall blank needs sentence-level native-language context on
-            # the question side. Recognition-only prompts remain usable with
-            # corpora that do not contain translations.
-            continue
-
         score = _score_match(matched, due_by_key)
         candidates.append(
             SentenceCandidate(
@@ -363,7 +364,22 @@ def select_review_task(
         )
 
     if not candidates:
-        return None
+        remaining_anchor_keys = set(due_by_key) - excluded_anchor_keys - {anchor_key}
+        if not remaining_anchor_keys:
+            return None
+        return select_review_task(
+            db_path,
+            due_cards,
+            language,
+            shown_sentence_ids,
+            candidate_limit,
+            min_sentence_words,
+            max_sentence_words,
+            query_term_limit,
+            matching_mode,
+            soft_avoid_sentence_ids,
+            excluded_anchor_keys | {anchor_key},
+        )
 
     soft_avoid = soft_avoid_sentence_ids or ()
     preferred = [candidate for candidate in candidates if candidate.sentence_id not in soft_avoid]
@@ -434,6 +450,29 @@ def _score_match(matched_lemmas: Sequence[str], due_by_lemma: Dict[str, List[Due
     return score
 
 
+def _greedy_anchor_key(
+    due_by_key: Dict[str, List[DueCard]], excluded_keys: Optional[Set[str]] = None
+) -> str:
+    """Choose one most-urgent due word to anchor the next sentence query."""
+    ranked = sorted(
+        [
+            (card, key)
+            for key, cards in due_by_key.items()
+            if key not in (excluded_keys or set())
+            for card in cards
+        ],
+        key=lambda item: (
+            -int(bool(item[0].is_learning_due)),
+            -float(item[0].overdue or 0.0),
+            -float(item[0].priority or 0.0),
+            int(item[0].due_in_days),
+            int(item[0].card_id),
+            item[1],
+        ),
+    )
+    return ranked[0][1] if ranked else ""
+
+
 def _matched_card_count(matched_lemmas: Sequence[str], due_by_lemma: Dict[str, List[DueCard]]) -> int:
     card_ids: Set[int] = set()
     for lemma in matched_lemmas:
@@ -452,16 +491,6 @@ def _matched_learning_card_count(
             if card.is_learning_due
         )
     return len(card_ids)
-
-
-def _matched_cards_include_recall(
-    matched_keys: Sequence[str], due_by_key: Dict[str, List[DueCard]]
-) -> bool:
-    return any(
-        _due_card_direction(card) == "recall"
-        for key in matched_keys
-        for card in due_by_key.get(key, ())
-    )
 
 
 def _due_cards_by_id(
@@ -528,8 +557,8 @@ def _days_label(days: int) -> str:
 
 def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, int, float, int, float, int, int]:
     return (
-        -candidate.matched_learning_card_count,
         -candidate.matched_card_count,
+        -candidate.matched_learning_card_count,
         -candidate.score,
         0 if str(candidate.translation or "").strip() else 1,
         candidate.bm25_score,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import quote, unquote, urlsplit
@@ -90,6 +90,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self.active_task: Optional[ReviewTask] = None
         self._revealed_sentence_id: Optional[int] = None
         self._tts_sentence_ids_in_flight: Set[int] = set()
+        self._tts_ready_paths: Dict[int, Path] = {}
+        self._tts_play_when_ready: Set[int] = set()
         self._loading = False
         self._started = False
         self._selection_generation = 0
@@ -312,19 +314,22 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return task
 
-        taskman = getattr(self.mw, "taskman", None)
+        taskman = getattr(getattr(self, "mw", None), "taskman", None)
         if taskman is not None and callable(getattr(taskman, "run_in_background", None)):
             self._loading = True
             self.active_task = None
-            self._set_html(
-                render_message_html(
-                    "Finding a useful sentence",
-                    "You can keep using Anki while the local corpus is searched.",
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    show_refresh=False,
+            if not getattr(self, "review_history", []):
+                self._set_html(
+                    render_message_html(
+                        "Finding a useful sentence",
+                        "You can keep using Anki while the local corpus is searched.",
+                        dark_mode=self._dark_mode(),
+                        font_size=self.config.font_size,
+                        show_refresh=False,
+                    )
                 )
-            )
+            else:
+                self._notify_selection_pending()
             try:
                 taskman.run_in_background(
                     select_task,
@@ -509,6 +514,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self.review_history.append(
             (self.active_task, list(summary.answered_card_ids), undo_handle)
         )
+        self._notify_progress_changed()
+        self._notify_undo_available(True)
         session_results = getattr(self, "_session_results", None)
         if session_results is None:
             session_results = []
@@ -542,6 +549,9 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         if not self.review_history:
             return
 
+        # A sentence lookup may still be running after the just-graded task.
+        # Its callback must not replace the sentence restored by this undo.
+        self._invalidate_pending_selection()
         interrupted_task = self.active_task
         task, answered_card_ids, undo_handle = self.review_history.pop()
         try:
@@ -564,6 +574,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             return
 
         self.answered_card_ids.difference_update(answered_card_ids)
+        self._notify_progress_changed()
         session_results = getattr(self, "_session_results", [])
         if session_results:
             session_results.pop()
@@ -605,8 +616,11 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 is_favorite=favorite,
             )
         )
-        if self.config.autoplay_sentence_tts and not _task_has_recall(task):
-            self._request_sentence_tts()
+        if self.config.autoplay_sentence_tts:
+            if _task_has_recall(task):
+                self._prepare_sentence_tts(task)
+            else:
+                self._request_sentence_tts()
 
     def _mark_solution_revealed(self, sentence_id: Any = None) -> None:
         task = self.active_task
@@ -646,6 +660,30 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     "true" if saved else "false",
                     json.dumps(str(error or ""), ensure_ascii=False),
                 )
+            )
+        except Exception:
+            pass
+
+    def _notify_selection_pending(self) -> None:
+        try:
+            self.web.eval("window.contextualSelectionPending();")
+        except Exception:
+            pass
+
+    def _notify_undo_available(self, available: bool) -> None:
+        try:
+            self.web.eval(
+                "window.contextualSetUndoAvailable(%s);"
+                % ("true" if available else "false")
+            )
+        except Exception:
+            pass
+
+    def _notify_progress_changed(self) -> None:
+        completed, total = self._today_progress()
+        try:
+            self.web.eval(
+                "window.contextualProgressChanged(%s, %s);" % (completed, total)
             )
         except Exception:
             pass
@@ -808,6 +846,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             except Exception as exc:
                 translated = ""
                 error = _friendly_translation_error(exc)
+            if translation_kind == "sentence" and translated:
+                self.active_task = replace(current_task, translation=translated)
             self._notify_translation_finished(
                 translation_kind,
                 numeric_request_id,
@@ -816,7 +856,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 error,
             )
 
-        taskman = getattr(self.mw, "taskman", None)
+        taskman = getattr(getattr(self, "mw", None), "taskman", None)
         if taskman is not None and callable(getattr(taskman, "run_in_background", None)):
             try:
                 taskman.run_in_background(translate, done)
@@ -837,6 +877,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         except Exception as exc:
             translated = ""
             error = _friendly_translation_error(exc)
+        if translation_kind == "sentence" and translated and self.active_task is not None:
+            self.active_task = replace(self.active_task, translation=translated)
         self._notify_translation_finished(
             translation_kind,
             numeric_request_id,
@@ -878,6 +920,18 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         except Exception as exc:
             self._show_warning("Could not play media:\n\n%s" % exc)
 
+    def _prepare_sentence_tts(self, task: ReviewTask) -> None:
+        """Warm the recall audio cache without playing or revealing the answer."""
+        taskman = getattr(getattr(self, "mw", None), "taskman", None)
+        if taskman is None or not callable(getattr(taskman, "run_in_background", None)):
+            return
+        sentence_id = task.sentence_id
+        if sentence_id in getattr(self, "_tts_ready_paths", {}):
+            return
+        if sentence_id in getattr(self, "_tts_sentence_ids_in_flight", set()):
+            return
+        self._start_sentence_tts(task)
+
     def _request_sentence_tts(self) -> None:
         task = self.active_task
         if task is None:
@@ -891,16 +945,41 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             return
 
         sentence_id = task.sentence_id
+        ready_paths = getattr(self, "_tts_ready_paths", None)
+        if ready_paths is None:
+            ready_paths = {}
+            self._tts_ready_paths = ready_paths
+        ready_path = ready_paths.get(sentence_id)
+        if ready_path is not None:
+            try:
+                self._play_tts_path(ready_path)
+                self._notify_tts_finished("")
+            except Exception as exc:
+                ready_paths.pop(sentence_id, None)
+                self._notify_tts_finished(_friendly_tts_error(exc))
+            return
+
+        play_when_ready = getattr(self, "_tts_play_when_ready", None)
+        if play_when_ready is None:
+            play_when_ready = set()
+            self._tts_play_when_ready = play_when_ready
+        play_when_ready.add(sentence_id)
+        in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
+        if in_flight is None:
+            in_flight = set()
+            self._tts_sentence_ids_in_flight = in_flight
+        if sentence_id in in_flight:
+            return
+        self._start_sentence_tts(task)
+
+    def _start_sentence_tts(self, task: ReviewTask) -> None:
+        sentence_id = task.sentence_id
         sentence = task.full_text
         language = task.language or self.config.language
         in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
         if in_flight is None:
             in_flight = set()
             self._tts_sentence_ids_in_flight = in_flight
-        if sentence_id in in_flight:
-            # Autoplay and a quick manual click can arrive back-to-back. Let the
-            # original request own playback and the eventual UI completion.
-            return
         in_flight.add(sentence_id)
 
         def generate() -> Path:
@@ -918,15 +997,18 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 return
             except Exception as exc:
                 in_flight.discard(sentence_id)
-                self._notify_tts_finished(_friendly_tts_error(exc))
+                if sentence_id in getattr(self, "_tts_play_when_ready", set()):
+                    self._tts_play_when_ready.discard(sentence_id)
+                    self._notify_tts_finished(_friendly_tts_error(exc))
                 return
 
         try:
             path = generate()
-            self._play_tts_path(path)
-            self._notify_tts_finished("")
+            self._finish_sentence_tts(path, sentence_id)
         except Exception as exc:
-            self._notify_tts_finished(_friendly_tts_error(exc))
+            if sentence_id in getattr(self, "_tts_play_when_ready", set()):
+                self._tts_play_when_ready.discard(sentence_id)
+                self._notify_tts_finished(_friendly_tts_error(exc))
         finally:
             in_flight.discard(sentence_id)
 
@@ -934,20 +1016,39 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
         if in_flight is not None:
             in_flight.discard(sentence_id)
-        active_task = self.active_task
-        if active_task is None or active_task.sentence_id != sentence_id:
-            return
-        if (
-            _task_has_recall(active_task)
-            and getattr(self, "_revealed_sentence_id", None) != active_task.sentence_id
-        ):
+        done = getattr(future, "done", None)
+        if callable(done) and not done():
+            getattr(self, "_tts_play_when_ready", set()).discard(sentence_id)
             return
         try:
             path = Path(future.result())
-            self._play_tts_path(path)
-            self._notify_tts_finished("")
+            self._finish_sentence_tts(path, sentence_id)
         except Exception as exc:
-            self._notify_tts_finished(_friendly_tts_error(exc))
+            if sentence_id in getattr(self, "_tts_play_when_ready", set()):
+                self._tts_play_when_ready.discard(sentence_id)
+                self._notify_tts_finished(_friendly_tts_error(exc))
+
+    def _finish_sentence_tts(self, path: Path, sentence_id: int) -> None:
+        ready_paths = getattr(self, "_tts_ready_paths", None)
+        if ready_paths is None:
+            ready_paths = {}
+            self._tts_ready_paths = ready_paths
+        ready_paths[sentence_id] = Path(path)
+        play_when_ready = getattr(self, "_tts_play_when_ready", set())
+        if sentence_id not in play_when_ready:
+            return
+        active_task = self.active_task
+        if active_task is None or active_task.sentence_id != sentence_id:
+            play_when_ready.discard(sentence_id)
+            return
+        if (
+            _task_has_recall(active_task)
+            and getattr(self, "_revealed_sentence_id", None) != sentence_id
+        ):
+            return
+        play_when_ready.discard(sentence_id)
+        self._play_tts_path(Path(path))
+        self._notify_tts_finished("")
 
     def _play_tts_path(self, path: Path) -> None:
         from .tts import tts_cache_dir

@@ -118,6 +118,9 @@ Clicked target cards are answered as `Again`. Unclicked target cards are
 answered as `Good`. The add-on schedules those linked cards as a contextual
 batch, so a sentence can cover multiple due words without being limited to
 Anki's next queued card. `Ctrl+Z` restores the previous contextual batch.
+While the next sentence is being selected, the current sentence remains on
+screen and Ctrl+Z stays available. The progress bar updates immediately after
+grading or undoing.
 Sentences are avoided while the current Contextual Review window remains open,
 and recently shown sentences are also avoided when you close and reopen the
 window. They can still appear again if matching due cards remain and the corpus
@@ -153,10 +156,10 @@ hundreds of MB in size.
 When `Target language` and `Native language` differ in Settings, the downloader
 also uses Tatoeba's offline links export to fill the sentence `translation`
 column with a linked native-language sentence when one is available.
-If a sentence has no stored translation, `Show Solution` offers a
-`Translate Sentence` button that obtains a Google translation in the review window using
-the bundled Python `deep-translator` client. Hover briefly over any non-target
-word to see a cached quick translation without leaving the review window.
+If a sentence has no stored translation, the add-on obtains one automatically
+with the bundled Python `deep-translator` client and labels it as automatically
+translated. Hover briefly over any non-target word to see a cached quick
+translation without leaving the review window.
 
 You can also import local files:
 
@@ -276,9 +279,10 @@ not require spaCy. If spaCy is installed and `--spacy-model` is supplied, the
 builder uses its lemmas during preprocessing; otherwise it uses the bundled
 lightweight normalizer.
 
-Sentence selection uses SQLite FTS5/BM25 to retrieve candidates, then ranks them
-by matched due-card coverage, scheduling priority, BM25 score, and shorter
-sentence length.
+Sentence selection uses a greedy ordering: it anchors the query on the most
+urgent due word (intraday learning, then overdue review, then normal review),
+then chooses the returned sentence covering the most currently due cards.
+BM25 and shorter sentence length break remaining ties.
 
 ## Tests
 

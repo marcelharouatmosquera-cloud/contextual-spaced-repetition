@@ -47,12 +47,14 @@ Use this before publishing a build to AnkiWeb.
 - Set `Vocabulary matching` to `Lemma family` and confirm a seeded form such as `went -> go` can grade the `go` card.
 - Import Japanese text containing `。` without spaces and confirm sentences split, import, match, and highlight an embedded target expression.
 - On a recall card, confirm the exact inflected target form is replaced by its native-language hint, the sentence translation is visible before reveal, and TTS is blocked.
-- Reveal the solution with Space/Enter and confirm the blank becomes the target form, TTS becomes available, and Target Words definitions are shown.
+- With automatic TTS enabled, wait briefly on a recall question, reveal it, and confirm the prepared audio plays immediately without having played before reveal.
+- Reveal the solution with Space/Enter and confirm the blank becomes the target form and Target Words definitions are shown.
 - Toggle the favorite star, restart Anki, and confirm Favorite Sentences still shows the saved sentence and allows removal.
-- For a sentence without a stored translation, confirm `Translate Sentence` returns a Google translation in the window and hovering a non-target word shows a quick tooltip translation.
+- For a sentence without a stored translation, confirm translation starts automatically, carries an automatic-translation warning, and hovering a non-target word shows a quick tooltip translation.
 - Mark one target word as unknown, press Next, and confirm the matched card receives `Again`.
 - Leave one target word unmarked, press Next, and confirm the matched card receives `Good`.
 - Use Anki undo immediately after a sentence and confirm the batch answer is reversible.
+- Press Ctrl+Z while the next sentence is still being found and confirm the previous batch and progress bar are restored.
 - Confirm an unavailable/missing card surfaces an error before any review answer is applied.
 - Temporarily point the database path at a missing file and confirm Start Review tells the user to use the setup wizard, Tatoeba download, or sentence import.
 - Test dark mode and light mode.

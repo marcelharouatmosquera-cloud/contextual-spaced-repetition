@@ -152,8 +152,9 @@ Tools > Contextual Review > Start Review
 
 For recognition cards, read the sentence normally; highlighted words are linked
 to due Anki cards. For recall cards, the matched target-language form is replaced
-by a `[ translation ]` blank and the stored sentence translation is shown below
-the sentence. Produce the missing form mentally or aloud.
+by a `[ translation ]` blank and the sentence translation is shown below the
+sentence. Missing translations are obtained automatically and carry a small
+machine-translation warning. Produce the missing form mentally or aloud.
 
 Press `Space`, `Enter`, or `Show Solution` to reveal recall blanks. Click only
 the revealed or highlighted target words you did not remember. Do not click
@@ -161,12 +162,13 @@ words you knew.
 
 Click `Show Solution` to reveal the stored sentence translation, the matched
 card definitions, and the `Good`/`Again` interval preview. If no stored
-sentence translation exists, use `Translate Sentence` to obtain a Google
-translation directly in the review window. You can also hover briefly over a
-non-target word for a quick translation.
+sentence translation exists, Google translation runs automatically in the
+review window. You can also hover briefly over a non-target word for a quick
+translation.
 
-Sentence TTS is held until `Show Solution` whenever the sentence contains a
-recall blank, including when automatic sentence read-aloud is enabled.
+Sentence TTS is never played before `Show Solution` when the sentence contains
+a recall blank. With automatic read-aloud enabled, audio is prepared silently
+during the question and played as soon as the answer is revealed.
 
 Click `Grade & Next` to grade the sentence:
 
@@ -180,9 +182,13 @@ for the active language deck and remove entries you no longer need.
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.
 Press `Ctrl+Z` to undo the last contextual review and return to its sentence.
+Ctrl+Z remains available while the next sentence is being found, and undo also
+restores the progress bar immediately.
 
 Contextual Review schedules the linked cards as a batch, so a sentence can
 cover multiple due words without being limited to Anki's next queued card.
+The next sentence is selected greedily: anchor on the most urgent due word,
+then prefer the candidate that covers the most other currently due cards.
 Sentences are avoided while the current Contextual Review window remains open,
 and recently shown sentences are also avoided when you close and reopen the
 window. They can still appear again if matching due cards remain and the corpus

@@ -135,7 +135,7 @@ class WebTests(unittest.TestCase):
         html = render_task_html(self._recall_task())
 
         self.assertIn('id="question-translation"', html)
-        self.assertIn("questionTranslationText.textContent = task.translation", html)
+        self.assertIn("questionTranslationText.textContent = sentenceTranslation", html)
         self.assertIn("Say the missing target-language word", html)
         self.assertIn("function targetCanBeMarked", html)
         self.assertIn("function revealRecallBlanks", html)
@@ -228,6 +228,8 @@ class WebTests(unittest.TestCase):
 
         self.assertIn('event.key.toLowerCase() === "z"', html)
         self.assertIn('{ action: "undo" }', html)
+        self.assertIn("window.contextualSelectionPending", html)
+        self.assertIn("Ctrl+Z is still available", html)
 
     def test_favorite_button_is_small_and_fixed_in_the_top_right(self) -> None:
         html = render_task_html(self._task(), is_favorite=True)
@@ -254,6 +256,7 @@ class WebTests(unittest.TestCase):
         self.assertGreater(html.index('class="session-progress"'), html.index('class="actions"'))
         self.assertIn("position: fixed", html)
         self.assertIn("bottom: 0", html)
+        self.assertIn("window.contextualProgressChanged", html)
         self.assertIn('id="undo" class="compact-action"', html)
         self.assertIn('aria-label="Previous sentence"', html)
         self.assertIn('>&#x21B6;</button>', html)
@@ -342,11 +345,11 @@ class WebTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("No stored sentence translation.", html)
-        self.assertIn("Translate Sentence", html)
+        self.assertIn("Translating automatically...", html)
+        self.assertNotIn("Translate Sentence", html)
         self.assertIn("translate_sentence", html)
-        self.assertIn('translateSentence.textContent = "Translating…"', html)
-        self.assertIn("translation.textContent = translatedText", html)
+        self.assertIn("Automatically translated - may contain mistakes.", html)
+        self.assertIn("sentenceTranslation = translatedText", html)
         self.assertIn("go out", html)
         self.assertIn("solution.hidden = false", html)
         self.assertIn("lookup.disabled = selectedUnknownTargets().length === 0", html)

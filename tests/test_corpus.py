@@ -310,7 +310,7 @@ class CorpusTests(unittest.TestCase):
             self.assertEqual(saw.direction, "recognition")
             self.assertEqual(task.card_ids_by_key, {"see": [1]})
 
-    def test_recall_requires_a_stored_sentence_translation(self) -> None:
+    def test_recall_without_stored_translation_is_available_for_automatic_translation(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "sentences.db"
             initialize_database(db_path)
@@ -336,16 +336,17 @@ class CorpusTests(unittest.TestCase):
                 direction="recognition",
             )
 
-            self.assertIsNone(
-                select_review_task(
-                    db_path,
-                    [recall],
-                    "en",
-                    set(),
-                    10,
-                    matching_mode="exact_form",
-                )
+            recall_task = select_review_task(
+                db_path,
+                [recall],
+                "en",
+                set(),
+                10,
+                matching_mode="exact_form",
             )
+            self.assertIsNotNone(recall_task)
+            assert recall_task is not None
+            self.assertIsNone(recall_task.translation)
             self.assertIsNotNone(
                 select_review_task(
                     db_path,
@@ -387,7 +388,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(mixed_task.task_type, "mixed")
         self.assertTrue(mixed_task.has_recall)
 
-    def test_select_review_task_prefers_coverage_before_overdue_priority(self) -> None:
+    def test_select_review_task_anchors_on_the_most_urgent_word(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "sentences.db"
             initialize_database(db_path)
@@ -406,6 +407,28 @@ class CorpusTests(unittest.TestCase):
                 DueCard(card_id=2, target_word="word", lemma="word", priority=1.0),
                 DueCard(card_id=3, target_word="card", lemma="card", priority=1.0),
             ]
+            task = select_review_task(db_path, due, "en", set(), 10, matching_mode="lemma_family")
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.full_text, "Review now.")
+
+    def test_greedy_selection_tries_the_next_anchor_when_urgent_word_has_no_sentence(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(conn, "en", "Learn word cards.", None)
+                conn.commit()
+            finally:
+                conn.close()
+
+            due = [
+                DueCard(card_id=1, target_word="missing", lemma="missing", priority=100.0),
+                DueCard(card_id=2, target_word="word", lemma="word", priority=1.0),
+            ]
+
             task = select_review_task(db_path, due, "en", set(), 10, matching_mode="lemma_family")
 
             self.assertIsNotNone(task)
