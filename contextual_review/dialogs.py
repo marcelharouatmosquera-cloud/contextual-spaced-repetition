@@ -48,17 +48,18 @@ INSTRUCTIONS_TEXT = (
     "- Ctrl+Z immediately undoes the last contextual review batch.\n\n"
     "First-time setup\n"
     "1. Open Settings and choose the deck you want to configure.\n"
-    "2. In Basic Setup, choose your language and map the target word, translation, and optional audio fields.\n"
+    "2. In Basic Setup, choose both languages, then let Auto-Configure map fields and recognition/recall templates.\n"
     "3. Choose whether to review due cards, learn new cards, or include learning cards.\n"
     "4. Most people can leave Advanced / Nerd Settings unchanged.\n"
     "5. Add example sentences from the Sentence Library, or use Advanced settings to import your own file.\n"
     "6. Run Diagnostics. If every required check is OK, choose Start Review.\n\n"
     "One review, step by step\n"
-    "1. Read the sentence. Highlighted words are linked to due cards in the active deck profile.\n"
-    "2. Click only the words you did not remember. Leave remembered words unclicked.\n"
-    "3. Choose Show Solution, or press Space/Enter, to reveal the translation, definitions, and interval previews.\n"
-    "4. Choose Grade & Next, or press Space/Enter again, to submit the answers and continue.\n"
-    "5. If you made a mistake, press Ctrl+Z before continuing.\n\n"
+    "1. Recognition cards show the target word highlighted. Recall cards replace it with a blank and a native-language hint.\n"
+    "2. For recall, produce the missing target-language word mentally or aloud.\n"
+    "3. Choose Show Solution, or press Space/Enter, to reveal the missing word, translation, definitions, and interval previews.\n"
+    "4. Click only the words you did not remember after they are revealed. Leave remembered words unclicked.\n"
+    "5. Choose Grade & Next, or press Space/Enter again, to submit the answers and continue.\n"
+    "6. If you made a mistake, press Ctrl+Z before continuing.\n\n"
     "Sentence sources\n"
     "- The Sentence Library is the easiest starting point. It shows the current count and imports more when requested.\n"
     "- If Target language and Native language differ, linked Tatoeba translations are added when available.\n"
@@ -112,8 +113,8 @@ INSTRUCTIONS_HTML = """
 <h2>First-time setup</h2>
 <ol>
   <li><b>Choose the deck.</b> Open Settings and click the deck you want to configure.</li>
-  <li><b>Complete Basic Setup.</b> Choose your language, map the target word,
-      translation, and optional audio fields, then choose what to study today.</li>
+  <li><b>Complete Basic Setup.</b> Choose both languages, then let Auto-Configure
+      map fields and recognition/recall templates before choosing what to study today.</li>
   <li><b>Add sentences.</b> Use the Sentence Library in Basic Setup. Custom files
       and word forms remain available in Advanced settings.</li>
   <li><b>Run Diagnostics.</b> Resolve any required errors, then start reviewing.</li>
@@ -121,9 +122,12 @@ INSTRUCTIONS_HTML = """
 
 <h2>How a review works</h2>
 <ol>
-  <li>Read the sentence. Highlighted words correspond to due Anki cards.</li>
-  <li>Click only words you <b>did not remember</b>.</li>
-  <li>Choose <b>Show Solution</b> to reveal translations, definitions, and interval previews.</li>
+  <li>Recognition cards show a highlighted target word. Recall cards show a blank
+      with a native-language hint.</li>
+  <li>For recall, produce the missing target-language word mentally or aloud.</li>
+  <li>Choose <b>Show Solution</b> to reveal the missing word, translation,
+      definitions, and interval previews.</li>
+  <li>Click only revealed words you <b>did not remember</b>.</li>
   <li>Choose <b>Grade &amp; Next</b>: clicked words receive <b>Again</b>; unclicked words receive <b>Good</b>.</li>
 </ol>
 <p class="note"><b>Made a mistake?</b> Press <b>Ctrl+Z</b> to undo the last submitted batch.</p>
@@ -308,21 +312,28 @@ def _open_settings_editor_dialog(
     advanced_layout.addLayout(copy_row)
 
     custom_search_query = QLineEdit(config.custom_search_query)
-    custom_search_query.setPlaceholderText('is:due -card:2 -card:3 -card:Reverse')
+    custom_search_query.setPlaceholderText("is:due")
     custom_search_query.setToolTip(
-        "Standard Anki search for cards this add-on may review. Use it to exclude reverse cards, "
-        'for example: is:due -card:2 -card:3 -card:Reverse'
+        "Standard Anki search for cards this add-on may review. The search runs before "
+        "recognition and recall template routing, so do not exclude a recall template here."
     )
     target_field = _editable_combo(available_fields, config.target_field)
     target_field.setToolTip("Note field containing the word or expression being studied.")
     included_card_templates = QLineEdit(", ".join(config.included_card_templates))
     included_card_templates.setPlaceholderText("Optional: Card 1, Recognition, 1")
     included_card_templates.setToolTip(
-        "Leave blank to allow all templates after the search filter. "
-        "Use template names or card numbers to include only selected directions."
+        "Templates that show the learning-language word on the question side. "
+        "Use template names or card numbers. With recall templates configured, "
+        "leave this blank for a recall-only profile."
+    )
+    recall_templates = QLineEdit(", ".join(config.recall_templates))
+    recall_templates.setPlaceholderText("Optional: Card 2, Recall, 2")
+    recall_templates.setToolTip(
+        "Templates that show the translation on the question side and should use a contextual blank. "
+        "Use template names or card numbers."
     )
     language = _language_combo(config.language)
-    native_language = QLineEdit(config.native_language)
+    native_language = _language_combo(config.native_language)
     native_language.setToolTip(
         "Language used for stored sentence translations when downloading paired Tatoeba data."
     )
@@ -374,6 +385,12 @@ def _open_settings_editor_dialog(
     include_due.setChecked(config.include_due_cards)
     include_learning = QCheckBox()
     include_learning.setChecked(config.include_learning_cards)
+    autoplay_sentence_tts = QCheckBox("Read Every Sentence Aloud Automatically")
+    autoplay_sentence_tts.setChecked(config.autoplay_sentence_tts)
+    autoplay_sentence_tts.setToolTip(
+        "Read recognition sentences when they appear. Recall sentences wait until Show Solution "
+        "so the missing answer is not spoken early."
+    )
     strict_import = QCheckBox()
     strict_import.setChecked(config.strict_import_filter)
     keep_downloads = QCheckBox()
@@ -384,17 +401,32 @@ def _open_settings_editor_dialog(
     require_target_on_question = QCheckBox()
     require_target_on_question.setChecked(config.require_target_on_question)
     require_target_on_question.setToolTip(
-        "Skip cards whose front/question template does not contain the target field."
+        "Skip recognition cards whose front/question template does not contain the target field. "
+        "Configured recall templates are allowed to show only the translation."
     )
 
-    auto_group = QGroupBox("One-Click Setup")
+    language_group = QGroupBox("Step 1: Choose Your Languages")
+    language_form = QFormLayout(language_group)
+    language_form.addRow("Language you are learning", language)
+    language_form.addRow("Language for translations", native_language)
+    language_note = QLabel(
+        "Choose these yourself. Auto-Configure does not guess either language from the deck."
+    )
+    language_note.setWordWrap(True)
+    language_form.addRow(language_note)
+    basic_layout.addWidget(language_group)
+
+    auto_group = QGroupBox("Step 2: Auto-Configure Card Fields")
     auto_layout = QVBoxLayout(auto_group)
     auto_explanation = QLabel(
-        "Detect fields and keep only cards that show the language you are learning on the front."
+        "<b>Auto-Configure detects:</b> the target-word, translation, and audio fields, "
+        "plus which card templates are recognition or recall based on the fields shown on the front.<br>"
+        "<b>You still choose:</b> both languages above, then verify the suggested fields "
+        "and import a Sentence Library below."
     )
     auto_explanation.setWordWrap(True)
     auto_layout.addWidget(auto_explanation)
-    auto_button = QPushButton("Preview Auto-Configure")
+    auto_button = QPushButton("Preview Auto-Configure Fields")
     auto_button.setMinimumHeight(38)
     auto_layout.addWidget(auto_button)
     auto_status = QLabel()
@@ -402,19 +434,14 @@ def _open_settings_editor_dialog(
     auto_layout.addWidget(auto_status)
     basic_layout.addWidget(auto_group)
 
-    language_group = QGroupBox("Step 1: Choose Language")
-    language_form = QFormLayout(language_group)
-    language_form.addRow("Language you are learning", language)
-    basic_layout.addWidget(language_group)
-
-    fields_group = QGroupBox("Step 2: Map Your Fields")
+    fields_group = QGroupBox("Step 3: Verify the Suggested Fields")
     fields_form = QFormLayout(fields_group)
     fields_form.addRow("Which field is the target word?", target_field)
     fields_form.addRow("Which field is the translation?", translation_field)
     fields_form.addRow("Which field has audio? (Optional)", audio_field)
     basic_layout.addWidget(fields_group)
 
-    study_group = QGroupBox("Step 3: What to Study Today")
+    study_group = QGroupBox("Step 4: What to Study Today")
     study_layout = QVBoxLayout(study_group)
     study_layout.addWidget(include_due)
     new_row = QHBoxLayout()
@@ -426,6 +453,7 @@ def _open_settings_editor_dialog(
     study_layout.addLayout(new_row)
     include_learning.setText("Include Learning/Red Cards")
     study_layout.addWidget(include_learning)
+    study_layout.addWidget(autoplay_sentence_tts)
     basic_layout.addWidget(study_group)
 
     library_group = QGroupBox("Sentence Library")
@@ -470,14 +498,14 @@ def _open_settings_editor_dialog(
     cards_group = QGroupBox("Card Selection")
     cards_form = QFormLayout(cards_group)
     cards_form.addRow("Anki search query", custom_search_query)
-    cards_form.addRow("Included card templates", included_card_templates)
-    cards_form.addRow("Only test words that are on the Front of the card", require_target_on_question)
+    cards_form.addRow("Recognition templates", included_card_templates)
+    cards_form.addRow("Recall templates", recall_templates)
+    cards_form.addRow("Require target on Front for recognition", require_target_on_question)
     cards_form.addRow("Include cards due within", future_due_days)
     cards_form.addRow("Maximum cards per search", max_due)
 
-    behavior_group = QGroupBox("Language and Matching")
+    behavior_group = QGroupBox("Vocabulary Matching")
     behavior_form = QFormLayout(behavior_group)
-    behavior_form.addRow("Translation language", native_language)
     behavior_form.addRow("Vocabulary matching", matching_mode)
 
     matching_group = QGroupBox("Sentence Matching")
@@ -640,9 +668,10 @@ def _open_settings_editor_dialog(
         custom_search_query.setText(source_config.custom_search_query)
         target_field.setEditText(source_config.target_field)
         included_card_templates.setText(", ".join(source_config.included_card_templates))
+        recall_templates.setText(", ".join(source_config.recall_templates))
         require_target_on_question.setChecked(source_config.require_target_on_question)
         _set_combo_value(language, source_config.language)
-        native_language.setText(source_config.native_language)
+        _set_combo_value(native_language, source_config.native_language)
         _set_combo_value(matching_mode, source_config.matching_mode)
         _set_combo_value(target_extraction, source_config.target_extraction_mode)
         ignored_target_words.setText(", ".join(source_config.ignored_target_words))
@@ -659,6 +688,7 @@ def _open_settings_editor_dialog(
         include_new.setChecked(source_config.include_new_cards)
         max_new.setValue(source_config.max_new_cards)
         include_learning.setChecked(source_config.include_learning_cards)
+        autoplay_sentence_tts.setChecked(source_config.autoplay_sentence_tts)
         strict_import.setChecked(source_config.strict_import_filter)
         keep_downloads.setChecked(source_config.keep_downloaded_archives)
         apply_solution_mapping(source_config)
@@ -702,6 +732,11 @@ def _open_settings_editor_dialog(
     def selected_language_code() -> str:
         return str(language.currentData() or language.currentText() or "en").strip()
 
+    def selected_native_language_code() -> str:
+        return str(
+            native_language.currentData() or native_language.currentText() or "en"
+        ).strip()
+
     def auto_configure_deck() -> None:
         try:
             result = detect_deck_configuration(
@@ -716,7 +751,7 @@ def _open_settings_editor_dialog(
             return
         profile = load_language_profiles().get(selected_language_code())
         language_name = profile.name if profile and profile.name else selected_language_code().upper()
-        native_code = native_language.text().strip() or "en"
+        native_code = selected_native_language_code()
         native_profile = load_language_profiles().get(native_code)
         native_name = native_profile.name if native_profile and native_profile.name else native_code.upper()
         message = auto_config_summary(result, language_name, native_name)
@@ -730,17 +765,19 @@ def _open_settings_editor_dialog(
             "Target word field: %s\n"
             "Translation field: %s\n"
             "Audio field: %s\n"
-            "Included card templates: %s\n\n"
-            "Contextual Review is designed for %s to %s recognition cards. "
-            "%s to %s production cards are excluded because the add-on needs "
-            "a visible target-language word to find a matching sentence.\n\n"
+            "Recognition templates: %s\n"
+            "Recall templates: %s\n\n"
+            "%s to %s recognition cards keep the target word visible. "
+            "%s to %s recall cards show a contextual blank with native-language support. "
+            "Templates that show neither configured field are excluded.\n\n"
             "Apply these settings?"
             % (
                 message,
                 result.target_field,
                 result.translation_field,
                 result.audio_field or "None",
-                ", ".join(result.included_templates),
+                ", ".join(result.included_templates) or "None",
+                ", ".join(result.recall_templates) or "None",
                 language_name,
                 native_name,
                 native_name,
@@ -755,6 +792,7 @@ def _open_settings_editor_dialog(
         translation_field.setEditText(result.translation_field)
         _set_optional_combo_value(audio_field, result.audio_field)
         included_card_templates.setText(", ".join(result.included_templates))
+        recall_templates.setText(", ".join(result.recall_templates))
         require_target_on_question.setChecked(result.target_field_directly_on_question)
         custom_search_query.setText("is:due")
         _set_combo_value(matching_mode, "lemma_family")
@@ -769,12 +807,16 @@ def _open_settings_editor_dialog(
                 "audio_autoplay": False,
             }
         )
+        auto_status.setText(
+            "Fields plus recognition and recall templates applied. Still check both languages above, "
+            "verify the three field choices, and make sure the Sentence Library has sentences."
+        )
 
     def current_library_config(import_limit: int = 0):
         return replace(
             config,
             language=selected_language_code(),
-            native_language=native_language.text().strip() or "en",
+            native_language=selected_native_language_code(),
             database_path=database_path.text().strip() or DEFAULT_CONFIG["database_path"],
             min_sentence_words=min_words.value(),
             max_sentence_words=max_words.value(),
@@ -1003,9 +1045,10 @@ def _open_settings_editor_dialog(
         "dictionary_field": compatibility_dictionary_field,
         "solution_fields": serialized_solution_fields,
         "included_card_templates": included_card_templates.text().strip(),
+        "recall_templates": recall_templates.text().strip(),
         "require_target_on_question": require_target_on_question.isChecked(),
         "language": str(language.currentData() or language.currentText()).strip() or "en",
-        "native_language": native_language.text().strip() or "en",
+        "native_language": selected_native_language_code(),
         "matching_mode": matching_mode.currentData(),
         "target_extraction_mode": target_extraction.currentData(),
         "ignored_target_words": ignored_target_words.text().strip(),
@@ -1021,6 +1064,7 @@ def _open_settings_editor_dialog(
         "include_new_cards": include_new.isChecked(),
         "max_new_cards": max_new.value(),
         "include_learning_cards": include_learning.isChecked(),
+        "autoplay_sentence_tts": autoplay_sentence_tts.isChecked(),
         "strict_import_filter": strict_import.isChecked(),
         "keep_downloaded_archives": keep_downloads.isChecked(),
     }

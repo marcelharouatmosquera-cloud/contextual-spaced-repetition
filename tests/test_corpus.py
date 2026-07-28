@@ -20,7 +20,13 @@ from contextual_review.corpus import (
     upsert_word_forms,
     WORD_FORMS_BACKFILL_KEY,
 )
-from contextual_review.types import DueCard, SentenceCandidate
+from contextual_review.types import (
+    DueCard,
+    ReviewTask,
+    SentenceCandidate,
+    TargetWordDefinition,
+    Token,
+)
 from contextual_review.importer import sentence_word_map
 
 
@@ -165,6 +171,176 @@ class CorpusTests(unittest.TestCase):
                 [("review", "revise"), ("word", "term")],
             )
 
+    def test_same_match_key_prefers_recognition_and_leaves_recall_due(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(conn, "en", "We review daily.", "Wir wiederholen täglich.")
+                conn.commit()
+            finally:
+                conn.close()
+
+            task = select_review_task(
+                db_path,
+                [
+                    DueCard(
+                        card_id=1,
+                        target_word="review",
+                        lemma="review",
+                        word_form="review",
+                        match_key="review",
+                        direction="recognition",
+                    ),
+                    DueCard(
+                        card_id=2,
+                        target_word="review",
+                        lemma="review",
+                        word_form="review",
+                        match_key="review",
+                        definition="wiederholen",
+                        direction="recall",
+                    ),
+                ],
+                "en",
+                set(),
+                10,
+                matching_mode="exact_form",
+            )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.card_ids_by_key, {"review": [1]})
+            target = next(token for token in task.tokens if token.is_target)
+            self.assertEqual(target.card_ids, (1,))
+            self.assertEqual(target.direction, "recognition")
+            self.assertEqual(task.task_type, "recognition")
+
+    def test_one_surface_token_never_carries_mixed_direction_card_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(conn, "en", "They saw it.", "Sie sahen es.")
+                upsert_word_forms(
+                    conn,
+                    [("saw", "see"), ("saw", "saw"), ("see", "see")],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            task = select_review_task(
+                db_path,
+                [
+                    DueCard(
+                        card_id=1,
+                        target_word="see",
+                        lemma="see",
+                        word_form="see",
+                        direction="recognition",
+                    ),
+                    DueCard(
+                        card_id=2,
+                        target_word="saw",
+                        lemma="saw",
+                        word_form="saw",
+                        definition="a saw",
+                        direction="recall",
+                    ),
+                ],
+                "en",
+                set(),
+                10,
+                matching_mode="lemma_family",
+            )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            saw = next(token for token in task.tokens if token.text == "saw")
+            self.assertEqual(saw.card_ids, (1,))
+            self.assertEqual(saw.direction, "recognition")
+            self.assertEqual(task.card_ids_by_key, {"see": [1]})
+
+    def test_recall_requires_a_stored_sentence_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(conn, "en", "We review daily.", None)
+                conn.commit()
+            finally:
+                conn.close()
+
+            recall = DueCard(
+                card_id=1,
+                target_word="review",
+                lemma="review",
+                word_form="review",
+                direction="recall",
+            )
+            recognition = DueCard(
+                card_id=2,
+                target_word="review",
+                lemma="review",
+                word_form="review",
+                direction="recognition",
+            )
+
+            self.assertIsNone(
+                select_review_task(
+                    db_path,
+                    [recall],
+                    "en",
+                    set(),
+                    10,
+                    matching_mode="exact_form",
+                )
+            )
+            self.assertIsNotNone(
+                select_review_task(
+                    db_path,
+                    [recognition],
+                    "en",
+                    set(),
+                    10,
+                    matching_mode="exact_form",
+                )
+            )
+
+    def test_review_task_reports_recognition_recall_and_mixed_modes(self) -> None:
+        recognition = Token("seen", "see", True, is_target=True)
+        recall = Token("recalled", "recall", True, is_target=True, direction="recall")
+
+        recognition_task = ReviewTask(1, "en", "Seen.", None, [recognition], {})
+        recall_task = ReviewTask(
+            2,
+            "en",
+            "Recalled.",
+            "Erinnert.",
+            [recall],
+            {},
+            target_words=(TargetWordDefinition(2, "recall", direction="recall"),),
+        )
+        mixed_task = ReviewTask(
+            3,
+            "en",
+            "Seen and recalled.",
+            "Gesehen und erinnert.",
+            [recognition, recall],
+            {},
+        )
+
+        self.assertEqual(recognition_task.task_type, "recognition")
+        self.assertFalse(recognition_task.has_recall)
+        self.assertEqual(recall_task.task_type, "recall")
+        self.assertTrue(recall_task.has_recall)
+        self.assertEqual(mixed_task.task_type, "mixed")
+        self.assertTrue(mixed_task.has_recall)
+
     def test_select_review_task_prefers_coverage_before_overdue_priority(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "sentences.db"
@@ -189,6 +365,37 @@ class CorpusTests(unittest.TestCase):
             self.assertIsNotNone(task)
             assert task is not None
             self.assertEqual(task.full_text, "Learn word cards.")
+
+    def test_select_review_task_prefers_a_due_learning_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            import sqlite3
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(conn, "en", "Review now.", None)
+                insert_sentence(conn, "en", "Learn word cards.", None)
+                conn.commit()
+            finally:
+                conn.close()
+
+            due = [
+                DueCard(
+                    card_id=1,
+                    target_word="review",
+                    lemma="review",
+                    priority=1010.0,
+                    is_learning_due=True,
+                ),
+                DueCard(card_id=2, target_word="word", lemma="word", priority=20.0),
+                DueCard(card_id=3, target_word="card", lemma="card", priority=20.0),
+            ]
+            task = select_review_task(db_path, due, "en", set(), 10, matching_mode="lemma_family")
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.full_text, "Review now.")
 
     def test_select_review_task_excludes_shown_sentence(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -346,6 +553,52 @@ class CorpusTests(unittest.TestCase):
             self.assertEqual(went.match_key, "go")
             self.assertEqual(went.card_ids, (12345,))
             self.assertEqual(task.card_ids_by_key["go"], [12345])
+
+    def test_recall_token_keeps_inflected_surface_answer_and_native_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                insert_sentence(
+                    conn,
+                    "de",
+                    "Er ging nach Hause.",
+                    "He went home.",
+                    {"er": "er", "ging": "gehen", "nach": "nach", "hause": "haus"},
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            task = select_review_task(
+                db_path,
+                [
+                    DueCard(
+                        card_id=12345,
+                        target_word="gehen",
+                        lemma="gehen",
+                        word_form="gehen",
+                        definition="to go",
+                        direction="recall",
+                    )
+                ],
+                "de",
+                set(),
+                10,
+                matching_mode="lemma_family",
+            )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            ging = next(token for token in task.tokens if token.text == "ging")
+            self.assertEqual(ging.text, "ging")
+            self.assertEqual(ging.card_ids, (12345,))
+            self.assertEqual(ging.direction, "recall")
+            self.assertEqual(ging.hint, "to go")
+            self.assertTrue(task.has_recall)
+            self.assertEqual(task.task_type, "recall")
+            self.assertEqual(task.target_words[0].direction, "recall")
 
     def test_lemma_family_falls_back_to_fts_prefix_when_form_table_has_no_word(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -519,6 +772,15 @@ class CorpusTests(unittest.TestCase):
             finally:
                 conn.close()
 
+            conn = sqlite3.connect(str(db_path))
+            try:
+                self.assertGreater(
+                    conn.execute("SELECT COUNT(*) FROM sentence_ngrams").fetchone()[0],
+                    0,
+                )
+            finally:
+                conn.close()
+
             due = [
                 DueCard(
                     card_id=88,
@@ -528,16 +790,20 @@ class CorpusTests(unittest.TestCase):
                     match_key=target,
                 )
             ]
-            task = select_review_task(
-                db_path,
-                due,
-                "ja",
-                set(),
-                10,
-                min_sentence_words=2,
-                max_sentence_words=10,
-                matching_mode="exact_form",
-            )
+            with patch(
+                "contextual_review.corpus._scan_substring_candidate_rows",
+                side_effect=AssertionError("indexed Japanese lookup should not scan sentences"),
+            ):
+                task = select_review_task(
+                    db_path,
+                    due,
+                    "ja",
+                    set(),
+                    10,
+                    min_sentence_words=2,
+                    max_sentence_words=10,
+                    matching_mode="exact_form",
+                )
 
             self.assertIsNotNone(task)
             assert task is not None

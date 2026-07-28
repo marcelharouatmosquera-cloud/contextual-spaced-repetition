@@ -16,6 +16,126 @@ from contextual_review.types import DueCard, ReviewTask, TargetWordDefinition, T
 
 
 class ReviewerBridgeTests(unittest.TestCase):
+    def _recall_task(self) -> ReviewTask:
+        return ReviewTask(
+            sentence_id=7,
+            language="de",
+            full_text="Er ging.",
+            translation="He went.",
+            tokens=[
+                Token(
+                    text="ging",
+                    lemma="gehen",
+                    is_word=True,
+                    is_target=True,
+                    card_ids=(70,),
+                    direction="recall",
+                    hint="to go",
+                )
+            ],
+            card_ids_by_key={"gehen": [70]},
+        )
+
+    def test_rendering_task_auto_reads_sentence_when_enabled(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({"autoplay_sentence_tts": True})
+        dialog.db_path = None
+        dialog.review_history = []
+        dialog.today_goal_card_ids = set()
+        dialog.answered_card_ids = set()
+        dialog._dark_mode = lambda: False
+        dialog._set_html = lambda _html: None
+        spoken = []
+        dialog._request_sentence_tts = lambda: spoken.append(True)
+
+        dialog._render_task(ReviewTask(1, "de", "Das Haus.", None, [], {}))
+
+        self.assertEqual(spoken, [True])
+
+    def test_rendering_recall_task_waits_to_auto_read_until_reveal(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({"autoplay_sentence_tts": True})
+        dialog.db_path = None
+        dialog.review_history = []
+        dialog.today_goal_card_ids = set()
+        dialog.answered_card_ids = set()
+        dialog._dark_mode = lambda: False
+        dialog._set_html = lambda _html: None
+        spoken = []
+        dialog._request_sentence_tts = lambda: spoken.append(True)
+
+        dialog._render_task(self._recall_task())
+
+        self.assertEqual(spoken, [])
+        self.assertIsNone(dialog._revealed_sentence_id)
+
+    def test_revealing_recall_task_autoplays_once_and_rejects_stale_sentence(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({"autoplay_sentence_tts": True})
+        dialog.active_task = self._recall_task()
+        dialog._revealed_sentence_id = None
+        spoken = []
+        dialog._request_sentence_tts = lambda: spoken.append(True)
+
+        dialog._on_bridge_command('{"action": "solution_revealed", "sentence_id": 999}')
+        dialog._on_bridge_command('{"action": "solution_revealed", "sentence_id": 7}')
+        dialog._on_bridge_command('{"action": "solution_revealed", "sentence_id": 7}')
+
+        self.assertEqual(spoken, [True])
+        self.assertEqual(dialog._revealed_sentence_id, 7)
+
+    def test_manual_recall_tts_is_blocked_before_reveal(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({})
+        dialog.active_task = self._recall_task()
+        dialog._revealed_sentence_id = None
+        errors = []
+        dialog._notify_tts_finished = errors.append
+
+        dialog._request_sentence_tts()
+
+        self.assertEqual(errors, ["Show the solution before playing this recall sentence."])
+
+    def test_autoplay_and_manual_tts_requests_for_one_sentence_are_coalesced(self) -> None:
+        class HoldingTaskman:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def run_in_background(self, work, done) -> None:
+                self.calls.append((work, done))
+
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({})
+        dialog.active_task = self._recall_task()
+        dialog._revealed_sentence_id = 7
+        dialog._tts_sentence_ids_in_flight = set()
+        taskman = HoldingTaskman()
+        dialog.mw = SimpleNamespace(taskman=taskman)
+
+        dialog._request_sentence_tts()
+        dialog._request_sentence_tts()
+
+        self.assertEqual(len(taskman.calls), 1)
+        self.assertEqual(dialog._tts_sentence_ids_in_flight, {7})
+
+        dialog.active_task = None
+        dialog._on_sentence_tts_done(Future(), 7)
+        self.assertEqual(dialog._tts_sentence_ids_in_flight, set())
+
+    def test_review_window_opens_large_but_fits_available_screen(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        resized_to = []
+        geometry = SimpleNamespace(width=lambda: 1000, height=lambda: 700)
+        screen = SimpleNamespace(availableGeometry=lambda: geometry)
+        dialog._dialog = SimpleNamespace(
+            screen=lambda: screen,
+            resize=lambda width, height: resized_to.append((width, height)),
+        )
+
+        dialog._resize_for_available_screen()
+
+        self.assertEqual(resized_to, [(920, 616)])
+
     def test_start_loads_only_once(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog._started = False
@@ -170,7 +290,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog.answered_card_ids = set()
         dialog.review_history = []
         loads = []
-        dialog._load_next_task = lambda: loads.append("next")
+        dialog._load_next_task = lambda refresh_due_cards=False: loads.append(refresh_due_cards)
 
         original = reviewer.answer_review_task
         try:
@@ -178,6 +298,7 @@ class ReviewerBridgeTests(unittest.TestCase):
                 answered_card_ids=[10, 20],
                 unknown_card_ids=[10],
                 known_card_ids=[20],
+                completed_card_ids=[20],
                 undo_snapshot=None,
             )
 
@@ -188,7 +309,33 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog.answered_card_ids, {20})
         self.assertEqual(dialog.review_history[0][1], [10, 20])
         self.assertEqual(dialog._session_forgotten_words, [["review"]])
-        self.assertEqual(loads, ["next"])
+        self.assertIsNone(dialog._due_cards_cache)
+        self.assertEqual(loads, [True])
+
+    def test_submit_does_not_complete_good_card_with_an_intraday_step(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.active_task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
+        dialog.mw = object()
+        dialog.config = normalize_config({})
+        dialog.answered_card_ids = set()
+        dialog.review_history = []
+        dialog._load_next_task = lambda refresh_due_cards=False: None
+
+        original = reviewer.answer_review_task
+        try:
+            reviewer.answer_review_task = lambda *args, **kwargs: SimpleNamespace(
+                answered_card_ids=[10],
+                unknown_card_ids=[],
+                known_card_ids=[10],
+                completed_card_ids=[],
+                undo_snapshot=None,
+            )
+            dialog._submit_answer([])
+        finally:
+            reviewer.answer_review_task = original
+
+        self.assertEqual(dialog.answered_card_ids, set())
+        self.assertEqual(dialog.review_history[0][1], [10])
 
     def test_undo_restores_previous_contextual_sentence(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -224,6 +371,36 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog.active_task, task)
         self.assertEqual(dialog.answered_card_ids, {20})
         self.assertIn("review", html[-1])
+
+    def test_undo_refuses_to_revert_a_newer_unrelated_anki_action(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
+        marker = reviewer.AnkiUndoMarker(last_step=42, label="Contextual Review")
+        dialog.review_history = [(task, [10], marker)]
+        dialog.answered_card_ids = {10}
+        dialog.active_task = None
+        dialog.config = normalize_config({})
+        dialog._dark_mode = lambda: False
+        rendered = []
+        dialog._set_html = rendered.append
+
+        class FakeCollection:
+            def __init__(self) -> None:
+                self.undo_called = False
+
+            def undo_status(self):
+                return SimpleNamespace(last_step=43, undo="Edit Note")
+
+            def undo(self) -> None:
+                self.undo_called = True
+
+        dialog.mw = SimpleNamespace(col=FakeCollection())
+
+        dialog._undo_last_review()
+
+        self.assertFalse(dialog.mw.col.undo_called)
+        self.assertEqual(dialog.review_history, [(task, [10], marker)])
+        self.assertIn("another Anki action happened afterward", rendered[-1])
 
     def test_regrading_previous_sentence_resumes_interrupted_sentence(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -283,6 +460,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
         dialog.today_goal_card_ids = {10, 20, 30}
+        dialog.answered_card_ids = {10, 20, 99}
         dialog.review_history = [
             (task, [10, 99], None),
             (task, [20], None),
@@ -510,6 +688,49 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.select_review_task = original_select
 
         self.assertEqual(len(collect_calls), 1)
+
+    def test_fresh_due_search_adds_newly_eligible_cards_to_lesson_goal(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.db_path = SimpleNamespace(exists=lambda: True)
+        dialog.config = normalize_config({})
+        dialog.shown_sentence_ids = set()
+        dialog.recent_sentence_ids = set()
+        dialog.answered_card_ids = set()
+        dialog.active_task = None
+        dialog._loading = False
+        dialog._due_cards_cache = None
+        dialog._selection_generation = 0
+        dialog._today_goal_initialized = False
+        dialog.today_goal_card_ids = set()
+        dialog._dark_mode = lambda: False
+        dialog._set_html = lambda html: None
+        dialog._mark_sentence_shown = lambda sentence_id: None
+        dialog.mw = object()
+
+        class DueBatch(list):
+            def __init__(self, card_ids):
+                super().__init__(
+                    DueCard(card_id=card_id, target_word=str(card_id), lemma=str(card_id))
+                    for card_id in card_ids
+                )
+                self.today_card_ids = frozenset(card_ids)
+
+        batches = [DueBatch([7, 8]), DueBatch([8, 9])]
+        task = ReviewTask(1, "en", "We review.", None, [], {"review": [7]})
+        original_collect = reviewer.collect_due_cards
+        original_select = reviewer.select_review_task
+        try:
+            reviewer.collect_due_cards = lambda *args, **kwargs: batches.pop(0)
+            reviewer.select_review_task = lambda *args, **kwargs: task
+            dialog._load_next_task()
+            dialog.active_task = None
+            dialog._due_cards_cache = None
+            dialog._load_next_task(refresh_due_cards=True)
+        finally:
+            reviewer.collect_due_cards = original_collect
+            reviewer.select_review_task = original_select
+
+        self.assertEqual(dialog.today_goal_card_ids, {7, 8, 9})
 
     def test_cached_again_card_waits_for_fresh_anki_due_search(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)

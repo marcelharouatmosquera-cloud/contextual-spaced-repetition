@@ -385,6 +385,22 @@ class ImporterTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_append_word_forms_counts_existing_rows_as_skipped_after_batch_insert(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp = Path(tempdir)
+            first = temp / "first.tsv"
+            second = temp / "second.tsv"
+            db_path = temp / "context.db"
+            first.write_text("went\tgo\n", encoding="utf-8")
+            second.write_text("went\tgo\nrunning\trun\n", encoding="utf-8")
+            config = normalize_config({"database_path": str(db_path), "language": "en"})
+            import_word_forms_file(first, config)
+
+            result = import_word_forms_file(second, config)
+
+            self.assertEqual(result.inserted, 1)
+            self.assertEqual(result.skipped, 1)
+
     def test_replace_word_forms_rolls_back_if_a_large_import_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             temp = Path(tempdir)

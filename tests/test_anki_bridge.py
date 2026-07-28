@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 import unittest
 
 import contextual_review.anki_bridge as bridge
@@ -11,7 +12,6 @@ from contextual_review.anki_bridge import (
     build_due_search_query,
     build_future_search_query,
     collect_due_cards,
-    restore_answer_snapshot,
 )
 from contextual_review.config import normalize_config
 from contextual_review.types import ReviewTask
@@ -157,6 +157,117 @@ class FakeMw:
         self.reset_called = True
 
 
+class GradeNowCard(FakeCard):
+    def __init__(self, card_id: int, state) -> None:
+        super().__init__(card_id)
+        self.queue = state["queue"]
+        self.type = state["type"]
+        self.due = state["due"]
+        self.nid = state.get("nid", card_id)
+        self.did = state.get("did", 1)
+        self.odid = state.get("odid", 0)
+
+
+class GradeNowBackend:
+    def __init__(self, collection, fail_rating=None) -> None:
+        self.collection = collection
+        self.fail_rating = fail_rating
+        self.calls = []
+
+    def grade_now(self, *, card_ids, rating: int) -> None:
+        self.calls.append((list(card_ids), rating))
+        if rating == self.fail_rating:
+            raise RuntimeError("grade failed")
+        for card_id in card_ids:
+            if rating == 0:
+                self.collection.states[card_id] = {
+                    "queue": 1,
+                    "type": 3,
+                    "due": 1_800_000_000,
+                    "nid": self.collection.states[card_id].get("nid", card_id),
+                    "did": self.collection.states[card_id].get("did", 1),
+                }
+            else:
+                self.collection.states[card_id] = {
+                    "queue": 2,
+                    "type": 2,
+                    "due": self.collection.sched.today + 5,
+                    "nid": self.collection.states[card_id].get("nid", card_id),
+                    "did": self.collection.states[card_id].get("did", 1),
+                }
+
+
+class GradeNowCollection(FakeCollection):
+    def __init__(self, card_ids, fail_rating=None) -> None:
+        super().__init__()
+        self.states = {
+            card_id: {"queue": 2, "type": 2, "due": self.sched.today, "nid": card_id, "did": 1}
+            for card_id in card_ids
+        }
+        self._backend = GradeNowBackend(self, fail_rating=fail_rating)
+        self.undo_names = []
+        self.merged_entries = []
+        self.undo_called = False
+        self._undo_snapshot = None
+
+    def get_card(self, card_id: int):
+        if card_id not in self.states:
+            raise KeyError(card_id)
+        return GradeNowCard(card_id, self.states[card_id])
+
+    def add_custom_undo_entry(self, name: str) -> int:
+        self.undo_names.append(name)
+        self._undo_snapshot = {card_id: dict(state) for card_id, state in self.states.items()}
+        return 42
+
+    def merge_undo_entries(self, target: int) -> None:
+        self.merged_entries.append(target)
+
+    def undo(self) -> None:
+        self.undo_called = True
+        if self._undo_snapshot is not None:
+            self.states = {
+                card_id: dict(state) for card_id, state in self._undo_snapshot.items()
+            }
+
+    def card_ids_of_note(self, note_id: int):
+        return [
+            card_id for card_id, state in self.states.items()
+            if state.get("nid", card_id) == note_id
+        ]
+
+
+class SiblingScheduler(FakeScheduler):
+    def __init__(self, collection) -> None:
+        super().__init__()
+        self.collection = collection
+        self.buried = []
+
+    def bury_cards(self, card_ids, manual=True) -> None:
+        self.buried.append((list(card_ids), manual))
+        for card_id in card_ids:
+            self.collection.states[card_id]["queue"] = -2
+
+
+class SiblingDecks(FakeDecks):
+    def config_dict_for_deck_id(self, deck_id: int):
+        return {
+            "new": {"bury": False},
+            "rev": {"bury": True},
+            "buryInterdayLearning": True,
+        }
+
+
+class SiblingGradeNowCollection(GradeNowCollection):
+    def __init__(self) -> None:
+        super().__init__([10, 11, 12])
+        self.states[10].update({"nid": 1, "queue": 2, "type": 2, "due": 100})
+        self.states[11].update({"nid": 1, "queue": 2, "type": 2, "due": 100})
+        self.states[12].update({"nid": 1, "queue": 0, "type": 0, "due": 1})
+        self.decks = SiblingDecks()
+        self.sched = SiblingScheduler(self)
+
+
 class SnakeCaseScheduler:
     today = 100
 
@@ -276,7 +387,10 @@ class AnkiBridgeTests(unittest.TestCase):
         mw = FakeMw()
         config = normalize_config({"search_query": "is:due"})
 
-        self.assertEqual(build_due_search_query(mw, config), '(is:due) -is:new deck:"Vocabulary"')
+        self.assertEqual(
+            build_due_search_query(mw, config),
+            '((is:due) -is:new) -is:buried deck:"Vocabulary"',
+        )
 
     def test_build_future_search_query_scopes_to_current_deck(self) -> None:
         mw = FakeMw()
@@ -284,7 +398,7 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual(
             build_future_search_query(mw, config),
-            '(prop:due<=3 -card:2 -card:3 -card:Reverse) -is:new deck:"Vocabulary"',
+            '((prop:due<=3 -card:2 -card:3 -card:Reverse) -is:new) -is:buried deck:"Vocabulary"',
         )
 
     def test_build_future_search_query_preserves_quoted_custom_terms(self) -> None:
@@ -299,14 +413,17 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual(
             build_future_search_query(mw, config),
-            '(prop:due<=3 deck:"Spanish Vocabulary" -tag:"hard words") -is:new',
+            '((prop:due<=3 deck:"Spanish Vocabulary" -tag:"hard words") -is:new) -is:buried',
         )
 
     def test_build_due_search_query_prefers_custom_filter_for_reverse_exclusion(self) -> None:
         mw = FakeMw()
         config = normalize_config({"custom_search_query": "is:due -card:Reverse"})
 
-        self.assertEqual(build_due_search_query(mw, config), '(is:due -card:Reverse) -is:new deck:"Vocabulary"')
+        self.assertEqual(
+            build_due_search_query(mw, config),
+            '((is:due -card:Reverse) -is:new) -is:buried deck:"Vocabulary"',
+        )
 
     def test_friendly_study_options_build_due_and_new_query(self) -> None:
         mw = FakeMw()
@@ -316,7 +433,7 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual(
             build_due_search_query(mw, config),
-            '((is:due -card:Reverse) OR (is:new -card:Reverse)) deck:"Vocabulary"',
+            '(((is:due -card:Reverse) OR (is:new -card:Reverse))) -is:buried deck:"Vocabulary"',
         )
 
     def test_new_card_limit_is_enforced(self) -> None:
@@ -398,6 +515,255 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual([card.card_id for card in due_cards], [2])
         self.assertEqual(due_cards.today_card_ids, frozenset({2}))
 
+    def test_collect_due_cards_admits_explicit_recall_template_without_target_on_question(self) -> None:
+        templates = [
+            {"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"},
+            {"name": "Recall", "qfmt": "{{English}}", "afmt": "{{Russian}}"},
+        ]
+        note = DirectionNote("dom", "house", templates)
+        recall = DirectionCard(2, note, 1)
+        recall.nid = 55
+        mw = FakeMw(DirectionCollection([recall]))
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "language": "ru",
+                "custom_search_query": "is:due",
+                "included_card_templates": ["Recognition"],
+                "recall_templates": ["Recall"],
+                "require_target_on_question": True,
+            }
+        )
+
+        due_cards = collect_due_cards(mw, config)
+
+        self.assertEqual([card.card_id for card in due_cards], [2])
+        self.assertEqual(due_cards[0].direction, "recall")
+        self.assertEqual(due_cards[0].note_id, 55)
+        self.assertEqual(due_cards[0].definition, "house")
+
+    def test_recall_hint_never_uses_the_target_field_itself(self) -> None:
+        templates = [
+            {"name": "Recall", "qfmt": "{{English}}", "afmt": "{{Russian}}"},
+        ]
+        note = DirectionNote("dom", "house", templates)
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "Russian",
+                "solution_fields": [{"field": "Russian", "display": "text"}],
+                "recall_templates": ["Recall"],
+                "custom_search_query": "is:due",
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(1, note, 0)])),
+            config,
+        )
+
+        self.assertEqual(len(due_cards), 1)
+        self.assertEqual(due_cards[0].direction, "recall")
+        self.assertEqual(due_cards[0].definition, "house")
+
+    def test_recall_card_without_a_non_target_hint_is_skipped(self) -> None:
+        templates = [
+            {"name": "Recall", "qfmt": "{{English}}", "afmt": "{{Russian}}"},
+        ]
+        note = DirectionNote("dom", "", templates)
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "solution_fields": [{"field": "Russian", "display": "text"}],
+                "recall_templates": ["Recall"],
+                "custom_search_query": "is:due",
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(1, note, 0)])),
+            config,
+        )
+
+        self.assertEqual(due_cards, [])
+
+    def test_recall_only_profile_excludes_unmapped_templates(self) -> None:
+        templates = [
+            {"name": "Recall", "qfmt": "{{English}}", "afmt": "{{Russian}}"},
+            {"name": "Unrelated", "qfmt": "{{Extra}}", "afmt": "{{Russian}}"},
+        ]
+        note = FlexibleNote(
+            {"Russian": "dom", "English": "house", "Extra": "metadata"},
+            templates,
+        )
+        recall = DirectionCard(1, note, 0)
+        unrelated = DirectionCard(2, note, 1)
+        recall.nid = 10
+        unrelated.nid = 20
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "recall_templates": ["Recall"],
+                "custom_search_query": "is:due",
+                "require_target_on_question": False,
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([recall, unrelated])),
+            config,
+        )
+
+        self.assertEqual([card.card_id for card in due_cards], [1])
+        self.assertEqual(due_cards[0].direction, "recall")
+
+    def test_recall_template_label_does_not_override_an_unclassified_front(self) -> None:
+        templates = [
+            {"name": "Card 2", "qfmt": "{{Picture}}", "afmt": "{{Russian}}"},
+        ]
+        note = FlexibleNote(
+            {"Russian": "dom", "English": "house", "Picture": "house.jpg"},
+            templates,
+        )
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "recall_templates": ["Card 2"],
+                "custom_search_query": "is:due",
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(1, note, 0)])),
+            config,
+        )
+
+        self.assertEqual(due_cards, [])
+
+    def test_template_in_both_direction_lists_uses_question_fields(self) -> None:
+        recognition_note = DirectionNote(
+            "dom",
+            "house",
+            [{"name": "Shared", "qfmt": "{{Russian}}", "afmt": "{{English}}"}],
+        )
+        recall_note = DirectionNote(
+            "dom",
+            "house",
+            [{"name": "Shared", "qfmt": "{{English}}", "afmt": "{{Russian}}"}],
+        )
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "included_card_templates": ["Shared"],
+                "recall_templates": ["Shared"],
+                "custom_search_query": "is:due",
+            }
+        )
+
+        recognition = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(1, recognition_note, 0)])),
+            config,
+        )
+        recall = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(2, recall_note, 0)])),
+            config,
+        )
+
+        self.assertEqual(recognition[0].direction, "recognition")
+        self.assertEqual(recall[0].direction, "recall")
+
+    def test_shared_template_name_treats_typed_target_input_as_recall(self) -> None:
+        note = DirectionNote(
+            "dom",
+            "house",
+            [
+                {
+                    "name": "Shared",
+                    "qfmt": "{{English}}<br>{{type:Russian}}",
+                    "afmt": "{{Russian}}",
+                }
+            ],
+        )
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "included_card_templates": ["Shared"],
+                "recall_templates": ["Shared"],
+                "custom_search_query": "is:due",
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(1, note, 0)])),
+            config,
+        )
+
+        self.assertEqual(len(due_cards), 1)
+        self.assertEqual(due_cards[0].direction, "recall")
+
+    def test_hidden_target_does_not_satisfy_recognition_front_requirement(self) -> None:
+        note = DirectionNote(
+            "dom",
+            "house",
+            [
+                {
+                    "name": "Hidden target",
+                    "qfmt": '<div style="display:none">{{Russian}}</div>{{English}}',
+                    "afmt": "{{Russian}}",
+                }
+            ],
+        )
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "custom_search_query": "is:due",
+                "require_target_on_question": True,
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([DirectionCard(1, note, 0)])),
+            config,
+        )
+
+        self.assertEqual(due_cards, [])
+
+    def test_collect_due_cards_defers_recall_when_same_note_recognition_is_due(self) -> None:
+        templates = [
+            {"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"},
+            {"name": "Recall", "qfmt": "{{English}}", "afmt": "{{Russian}}"},
+        ]
+        note = DirectionNote("dom", "house", templates)
+        recognition = DirectionCard(20, note, 0)
+        recall = DirectionCard(10, note, 1)
+        recognition.nid = recall.nid = 77
+        recognition.due = 100
+        recall.due = 80
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "included_card_templates": ["Recognition"],
+                "recall_templates": ["Recall"],
+                "custom_search_query": "is:due",
+            }
+        )
+
+        due_cards = collect_due_cards(
+            FakeMw(DirectionCollection([recognition, recall])),
+            config,
+        )
+
+        self.assertEqual([card.card_id for card in due_cards], [20])
+        self.assertEqual(due_cards[0].direction, "recognition")
+
     def test_collect_due_cards_skips_filtered_deck_cards(self) -> None:
         templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
         note = DirectionNote("dom", "house", templates)
@@ -417,6 +783,32 @@ class AnkiBridgeTests(unittest.TestCase):
         due_cards = collect_due_cards(mw, config)
 
         self.assertEqual([card.card_id for card in due_cards], [1])
+
+    def test_collect_due_cards_suppresses_due_review_sibling_from_own_queue(self) -> None:
+        templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
+        note = DirectionNote("dom", "house", templates)
+        first = DirectionCard(1, note, 0)
+        sibling = DirectionCard(2, note, 0)
+        first.nid = 55
+        sibling.nid = 55
+        first.due = 90
+        sibling.due = 100
+        collection = DirectionCollection([first, sibling])
+        collection.decks = SiblingDecks()
+        mw = FakeMw(collection)
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "language": "ru",
+                "custom_search_query": "is:due",
+                "require_target_on_question": True,
+            }
+        )
+
+        due_cards = collect_due_cards(mw, config)
+
+        self.assertEqual([card.card_id for card in due_cards], [1])
+        self.assertEqual(due_cards.today_card_ids, frozenset({1}))
 
     def test_collect_due_cards_reads_dictionary_field(self) -> None:
         templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
@@ -547,6 +939,49 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual([card.card_id for card in due_cards], [2])
         self.assertEqual(due_cards.today_card_ids, frozenset({1, 2}))
 
+    def test_due_learning_card_enters_limited_batch_before_overdue_reviews(self) -> None:
+        templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
+        learning = DirectionCard(1, DirectionNote("learn", "learn", templates), 0)
+        learning.queue = 1
+        learning.type = 3
+        learning.due = int(time.time()) - 1
+        overdue = DirectionCard(2, DirectionNote("overdue", "overdue", templates), 0)
+        overdue.due = 1
+        mw = FakeMw(DirectionCollection([learning, overdue]))
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "custom_search_query": "is:due",
+                "max_due_cards": 1,
+                "require_target_on_question": True,
+            }
+        )
+
+        due_cards = collect_due_cards(mw, config)
+
+        self.assertEqual([card.card_id for card in due_cards], [1])
+        self.assertTrue(due_cards[0].is_learning_due)
+
+    def test_collect_due_cards_excludes_intraday_step_before_exact_timestamp(self) -> None:
+        templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
+        learning = DirectionCard(1, DirectionNote("learn", "learn", templates), 0)
+        learning.queue = 1
+        learning.type = 3
+        learning.due = int(time.time()) + 600
+        mw = FakeMw(DirectionCollection([learning]))
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "custom_search_query": "is:due",
+                "require_target_on_question": True,
+            }
+        )
+
+        due_cards = collect_due_cards(mw, config)
+
+        self.assertEqual(due_cards, [])
+        self.assertEqual(due_cards.today_card_ids, frozenset())
+
     def test_collect_due_cards_limits_distinct_cards_not_target_words(self) -> None:
         templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
         phrase = DirectionCard(1, DirectionNote("first second", "phrase", templates), 0)
@@ -589,6 +1024,34 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual(summary.known_card_ids, [20])
         self.assertTrue(mw.col.updated)
         self.assertTrue(mw.reset_called)
+
+    def test_lesson_completion_requires_a_next_step_after_today(self) -> None:
+        today = 100
+
+        self.assertFalse(
+            bridge._card_state_is_beyond_current_lesson(
+                {"card_id": 1, "queue": 1, "type": 3, "due": 1_800_000_000},
+                today,
+            )
+        )
+        self.assertFalse(
+            bridge._card_state_is_beyond_current_lesson(
+                {"card_id": 2, "queue": 3, "type": 3, "due": today},
+                today,
+            )
+        )
+        self.assertTrue(
+            bridge._card_state_is_beyond_current_lesson(
+                {"card_id": 3, "queue": 3, "type": 3, "due": today + 1},
+                today,
+            )
+        )
+        self.assertTrue(
+            bridge._card_state_is_beyond_current_lesson(
+                {"card_id": 4, "queue": 2, "type": 2, "due": today + 10},
+                today,
+            )
+        )
 
     def test_build_answer_plan_deduplicates_card_ids_and_prefers_unknown(self) -> None:
         config = normalize_config({"known_ease": 3, "unknown_ease": 1})
@@ -638,9 +1101,8 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual(scheduler.answers, [(10, 3)])
 
-    def test_answer_review_task_batches_arbitrary_cards_with_contextual_scheduler(self) -> None:
-        mw = FakeMw(ManualCollection([10, 20]))
-        mw.checkpoint = None
+    def test_answer_review_task_batches_arbitrary_cards_with_anki_grade_now(self) -> None:
+        mw = FakeMw(GradeNowCollection([10, 20]))
         config = normalize_config({"known_ease": 3, "unknown_ease": 1})
         task = ReviewTask(
             sentence_id=1,
@@ -655,46 +1117,13 @@ class AnkiBridgeTests(unittest.TestCase):
 
         self.assertEqual(summary.answered_card_ids, [10, 20])
         self.assertEqual(summary.unknown_card_ids, [10])
-        self.assertEqual(mw.checkpoints, [])
-        self.assertEqual(mw.col.sched.answers, [])
+        self.assertEqual(summary.completed_card_ids, [20])
+        self.assertEqual(mw.col._backend.calls, [([10], 0), ([20], 2)])
+        self.assertEqual(mw.col.undo_names, ["Contextual Review"])
+        self.assertEqual(mw.col.merged_entries, [42, 42])
         self.assertTrue(mw.col.updated)
         self.assertTrue(mw.reset_called)
-        self.assertEqual(mw.col.revlog_count(), 2)
-        self.assertEqual(mw.col.card_row(10)["type"], 3)
-        self.assertEqual(mw.col.card_row(10)["queue"], 1)
-        self.assertEqual(mw.col.card_row(10)["ivl"], 0)
-        self.assertEqual(mw.col.card_row(10)["left"], 1001)
-        self.assertEqual(mw.col.card_row(10)["lapses"], 1)
-        self.assertGreater(mw.col.card_row(20)["due"], 100)
-        self.assertIsNotNone(summary.undo_snapshot)
-
-        restore_answer_snapshot(mw, summary.undo_snapshot)
-
-        self.assertEqual(mw.col.revlog_count(), 0)
-        self.assertEqual(mw.col.card_row(10)["ivl"], 5)
-        self.assertEqual(mw.col.card_row(10)["lapses"], 0)
-        self.assertEqual(mw.col.card_row(20)["due"], 100)
-
-    def test_contextual_scheduler_refuses_filtered_deck_cards(self) -> None:
-        mw = FakeMw(ManualCollection([10]))
-        mw.checkpoint = None
-        mw.col.db.execute("UPDATE cards SET odid = 123, odue = 100 WHERE id = 10")
-        mw.col.db.commit()
-        config = normalize_config({"known_ease": 3, "unknown_ease": 1})
-        task = ReviewTask(
-            sentence_id=1,
-            language="en",
-            full_text="We review.",
-            translation=None,
-            tokens=[],
-            card_ids_by_key={"review": [10]},
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "filtered-deck card"):
-            answer_review_task(mw, task, [], config)
-
-        self.assertEqual(mw.col.revlog_count(), 0)
-        self.assertEqual(mw.col.card_row(10)["odid"], 123)
+        self.assertIsNone(summary.undo_snapshot)
 
     def test_answer_review_task_prefers_native_scheduler_when_database_is_available(self) -> None:
         mw = FakeMw(ManualCollection([10, 20]))
@@ -718,10 +1147,30 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual(summary.known_card_ids, [20])
         self.assertIsNone(summary.undo_snapshot)
 
-    def test_contextual_scheduler_restores_card_rows_after_write_failure(self) -> None:
-        mw = FakeMw(ManualCollection([10]))
-        mw.checkpoint = None
+    def test_grade_now_rolls_back_a_partially_graded_sentence(self) -> None:
+        mw = FakeMw(GradeNowCollection([10, 20], fail_rating=2))
         config = normalize_config({"known_ease": 3, "unknown_ease": 1})
+        task = ReviewTask(
+            sentence_id=1,
+            language="en",
+            full_text="We review.",
+            translation=None,
+            tokens=[],
+            card_ids_by_key={"review": [10], "card": [20]},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "could not grade"):
+            answer_review_task(mw, task, ["review"], config)
+
+        self.assertTrue(mw.col.undo_called)
+        self.assertEqual(mw.col.states[10]["queue"], 2)
+        self.assertEqual(mw.col.states[10]["due"], 100)
+        self.assertEqual(mw.col.states[20]["queue"], 2)
+        self.assertEqual(mw.col.states[20]["due"], 100)
+
+    def test_grade_now_buries_due_review_sibling_and_honors_new_bury_option(self) -> None:
+        mw = FakeMw(SiblingGradeNowCollection())
+        config = normalize_config({"known_ease": 3})
         task = ReviewTask(
             sentence_id=1,
             language="en",
@@ -730,22 +1179,14 @@ class AnkiBridgeTests(unittest.TestCase):
             tokens=[],
             card_ids_by_key={"review": [10]},
         )
-        original_insert = bridge._insert_revlog_row
-        try:
-            bridge._insert_revlog_row = lambda *args, **kwargs: (_ for _ in ()).throw(
-                RuntimeError("revlog failed")
-            )
 
-            with self.assertRaisesRegex(RuntimeError, "restored the previous card state"):
-                answer_review_task(mw, task, ["review"], config)
-        finally:
-            bridge._insert_revlog_row = original_insert
+        answer_review_task(mw, task, [], config)
 
-        self.assertEqual(mw.col.revlog_count(), 0)
-        self.assertEqual(mw.col.card_row(10)["type"], 2)
-        self.assertEqual(mw.col.card_row(10)["queue"], 2)
-        self.assertEqual(mw.col.card_row(10)["ivl"], 5)
-        self.assertEqual(mw.col.card_row(10)["lapses"], 0)
+        self.assertEqual(mw.col._backend.calls, [([10], 2)])
+        self.assertEqual(mw.col.sched.buried, [([11], False)])
+        self.assertEqual(mw.col.states[11]["queue"], -2)
+        self.assertEqual(mw.col.states[12]["queue"], 0)
+        self.assertEqual(mw.col.merged_entries, [42, 42])
 
     def test_answer_review_task_preflights_missing_cards_before_checkpoint(self) -> None:
         mw = FakeMw(FakeCollection(missing_card_ids={20}))

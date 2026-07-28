@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import json
+import re
 
 from contextual_review.types import ReviewTask, SolutionFieldValue, TargetWordDefinition, Token
 from contextual_review.web import render_message_html, render_task_html
@@ -27,6 +29,39 @@ class WebTests(unittest.TestCase):
                     definition="revise",
                     good_interval="12 days",
                     again_interval="today",
+                ),
+            ),
+        )
+
+    def _recall_task(self) -> ReviewTask:
+        return ReviewTask(
+            sentence_id=2,
+            language="de",
+            full_text="Er ging nach Hause.",
+            translation="He went home.",
+            tokens=[
+                Token(text="Er", lemma="er", is_word=True),
+                Token(text=" ", lemma="", is_word=False),
+                Token(
+                    text="ging",
+                    lemma="gehen",
+                    is_word=True,
+                    is_target=True,
+                    match_key="gehen",
+                    lookup_text="ging",
+                    card_ids=(20,),
+                    direction="recall",
+                    hint="to go",
+                ),
+                Token(text=" nach Hause.", lemma="", is_word=False),
+            ],
+            card_ids_by_key={"gehen": [20]},
+            target_words=(
+                TargetWordDefinition(
+                    card_id=20,
+                    target_word="gehen",
+                    definition="to go",
+                    direction="recall",
                 ),
             ),
         )
@@ -80,6 +115,95 @@ class WebTests(unittest.TestCase):
 
         self.assertIn("<\\/script>", html)
         self.assertNotIn("</script><img", html)
+
+    def test_recall_task_masks_exact_form_and_exposes_direction_payload(self) -> None:
+        html = render_task_html(self._recall_task())
+        payload_match = re.search(r"const task = (\{.*?\});\n", html)
+
+        self.assertIsNotNone(payload_match)
+        payload = json.loads(payload_match.group(1))
+        self.assertEqual(payload["taskType"], "recall")
+        self.assertTrue(payload["hasRecall"])
+        self.assertEqual(payload["targetWords"][0]["direction"], "recall")
+        self.assertIn('class="word target recall-blank"', html)
+        self.assertIn('data-answer="ging"', html)
+        self.assertIn('data-hint="to go"', html)
+        self.assertIn('>[ to go ]</span>', html)
+        self.assertNotIn('>ging</span>', html)
+
+    def test_recall_question_shows_translation_then_reveals_and_unlocks_grading(self) -> None:
+        html = render_task_html(self._recall_task())
+
+        self.assertIn('id="question-translation"', html)
+        self.assertIn("questionTranslationText.textContent = task.translation", html)
+        self.assertIn("Say the missing target-language word", html)
+        self.assertIn("function targetCanBeMarked", html)
+        self.assertIn("function revealRecallBlanks", html)
+        self.assertIn('span.textContent = span.dataset.answer || "…"', html)
+        self.assertIn('span.dataset.revealed = "true"', html)
+        self.assertIn('action: "solution_revealed"', html)
+
+    def test_recall_question_blocks_tts_and_does_not_expose_answer_in_aria_label(self) -> None:
+        html = render_task_html(self._recall_task())
+
+        self.assertIn("speakSentence.disabled = true", html)
+        self.assertIn('ttsStatus.textContent = "Available after Show Solution"', html)
+        self.assertIn('span.setAttribute("role", "note")', html)
+        self.assertIn('`Missing word. Hint: ${hint}`', html)
+        self.assertNotIn('`Mark unknown: ${span.dataset.answer}`', html)
+
+    def test_focused_recall_blank_uses_space_or_enter_to_reveal(self) -> None:
+        html = render_task_html(self._recall_task())
+
+        self.assertIn('if (event.key === " " || event.key === "Enter")', html)
+        self.assertIn("if (targetCanBeMarked(span))", html)
+        self.assertIn("} else {\n          revealSolution();", html)
+
+    def test_recall_answer_and_hint_are_attribute_escaped(self) -> None:
+        task = self._recall_task()
+        unsafe = ReviewTask(
+            sentence_id=task.sentence_id,
+            language=task.language,
+            full_text=task.full_text,
+            translation=task.translation,
+            tokens=[
+                Token(
+                    text='ging"><img src=x onerror="alert(1)">',
+                    lemma="gehen",
+                    is_word=True,
+                    is_target=True,
+                    card_ids=(20,),
+                    direction="recall",
+                    hint='to "go" <now>',
+                )
+            ],
+            card_ids_by_key=task.card_ids_by_key,
+            target_words=task.target_words,
+        )
+
+        html = render_task_html(unsafe)
+
+        self.assertIn('data-answer="ging&quot;&gt;&lt;img', html)
+        self.assertIn('data-hint="to &quot;go&quot; &lt;now&gt;"', html)
+        self.assertNotIn('data-answer="ging"><img', html)
+
+    def test_template_markers_inside_corpus_text_are_not_replaced_again(self) -> None:
+        task = ReviewTask(
+            sentence_id=4,
+            language="en",
+            full_text="Keep __TASK__ exactly.",
+            translation="Translation contains __SENTENCE__ unchanged.",
+            tokens=[Token(text="Keep __TASK__ exactly.", lemma="", is_word=False)],
+            card_ids_by_key={},
+        )
+
+        html = render_task_html(task)
+        payload_match = re.search(r"const task = (\{.*?\});\n", html)
+
+        self.assertIsNotNone(payload_match)
+        payload = json.loads(payload_match.group(1))
+        self.assertEqual(payload["translation"], "Translation contains __SENTENCE__ unchanged.")
+        self.assertIn("Keep __TASK__ exactly.", html)
 
     def test_target_words_are_keyboard_accessible_without_global_shortcut_bubbling(self) -> None:
         html = render_task_html(self._task())

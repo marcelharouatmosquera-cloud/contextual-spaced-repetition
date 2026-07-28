@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from .anki_bridge import (
     build_due_search_query,
     card_question_contains_target_field,
+    card_review_direction,
     card_template_labels,
     note_field_names,
 )
@@ -79,6 +80,8 @@ def _config_check(config: ContextConfig) -> DiagnosticCheck:
         issues.append("known and unknown ease are identical")
     if config.deck_scope == "configured" and not config.deck_name.strip():
         issues.append("configured deck scope has no deck name")
+    if config.target_field.strip().casefold() == config.dictionary_field.strip().casefold():
+        issues.append("target and translation fields are identical")
     if issues:
         return DiagnosticCheck("Config", "warning", "; ".join(issues))
     profile = "global"
@@ -255,8 +258,11 @@ def _card_direction_check(mw: Any, config: ContextConfig) -> DiagnosticCheck:
     if not card_ids:
         return DiagnosticCheck("Card directions", "warning", "no due cards available to inspect")
 
-    target_on_question = 0
-    likely_reverse = 0
+    recognition_count = 0
+    recall_count = 0
+    excluded_count = 0
+    invalid_recognition_count = 0
+    invalid_recall_count = 0
     template_counts: Dict[str, int] = {}
     inspected = 0
     for card_id in card_ids:
@@ -269,10 +275,20 @@ def _card_direction_check(mw: Any, config: ContextConfig) -> DiagnosticCheck:
         labels = card_template_labels(card, note)
         label = labels[-1] if labels else "Card"
         template_counts[label] = template_counts.get(label, 0) + 1
-        if card_question_contains_target_field(card, note, config.target_field):
-            target_on_question += 1
+        direction, template_allowed = card_review_direction(card, note, config)
+        if not template_allowed and direction == "recall":
+            invalid_recall_count += 1
+        elif not template_allowed:
+            excluded_count += 1
+        elif direction == "recall":
+            recall_count += 1
+        elif (
+            not config.require_target_on_question
+            or card_question_contains_target_field(card, note, config.target_field)
+        ):
+            recognition_count += 1
         else:
-            likely_reverse += 1
+            invalid_recognition_count += 1
 
     if inspected == 0:
         return DiagnosticCheck("Card directions", "warning", "could not load due cards for inspection")
@@ -280,16 +296,31 @@ def _card_direction_check(mw: Any, config: ContextConfig) -> DiagnosticCheck:
     templates = ", ".join(
         "%s=%s" % (name, count) for name, count in sorted(template_counts.items())
     )
-    included = (
-        "; included templates=%s" % ", ".join(config.included_card_templates)
-        if config.included_card_templates
-        else ""
-    )
+    configured_directions = []
+    if config.included_card_templates:
+        configured_directions.append(
+            "recognition templates=%s" % ", ".join(config.included_card_templates)
+        )
+    if config.recall_templates:
+        configured_directions.append(
+            "recall templates=%s" % ", ".join(config.recall_templates)
+        )
+    configured = "; %s" % "; ".join(configured_directions) if configured_directions else ""
     detail = (
-        "sampled %s card(s); %s contain target field on question; %s look reverse/production; templates: %s%s"
-        % (inspected, target_on_question, likely_reverse, templates or "unknown", included)
+        "sampled %s card(s); recognition=%s; recall=%s; excluded=%s; "
+        "invalid recognition=%s; invalid recall=%s; templates: %s%s"
+        % (
+            inspected,
+            recognition_count,
+            recall_count,
+            excluded_count,
+            invalid_recognition_count,
+            invalid_recall_count,
+            templates or "unknown",
+            configured,
+        )
     )
-    status = "warning" if likely_reverse and not config.included_card_templates else "ok"
+    status = "warning" if invalid_recognition_count or invalid_recall_count else "ok"
     return DiagnosticCheck("Card directions", status, detail)
 
 

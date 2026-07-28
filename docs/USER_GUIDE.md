@@ -54,10 +54,10 @@ deck automatically.
 
 Basic Setup uses friendly choices for due cards, new cards, and learning cards.
 `Preview Auto-Configure` detects field roles and card direction from note
-fields and card templates. It keeps target-to-English reading cards and excludes
-reverse English-to-target cards.
-Open Advanced / Nerd Settings only when you need Anki search syntax or an
-included card-template filter.
+fields and card templates. Target-to-native templates become recognition cards;
+native-to-target templates become contextual recall cards.
+Open Advanced / Nerd Settings only when you need Anki search syntax or the
+separate recognition/recall card-template filters.
 
 The default filter is:
 
@@ -150,16 +150,23 @@ Open:
 Tools > Contextual Review > Start Review
 ```
 
-Read the sentence. Highlighted words are the target words linked to due Anki
-cards.
+For recognition cards, read the sentence normally; highlighted words are linked
+to due Anki cards. For recall cards, the matched target-language form is replaced
+by a `[ translation ]` blank and the stored sentence translation is shown below
+the sentence. Produce the missing form mentally or aloud.
 
-Click only the target words you did not remember. Do not click words you knew.
+Press `Space`, `Enter`, or `Show Solution` to reveal recall blanks. Click only
+the revealed or highlighted target words you did not remember. Do not click
+words you knew.
 
 Click `Show Solution` to reveal the stored sentence translation, the matched
 card definitions, and the `Good`/`Again` interval preview. If no stored
 sentence translation exists, use `Translate Sentence` to obtain a Google
 translation directly in the review window. You can also hover briefly over a
 non-target word for a quick translation.
+
+Sentence TTS is held until `Show Solution` whenever the sentence contains a
+recall blank, including when automatic sentence read-aloud is enabled.
 
 Click `Grade & Next` to grade the sentence:
 

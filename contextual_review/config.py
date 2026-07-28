@@ -36,6 +36,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "solution_fields": [{"field": "Back", "label": "", "display": "auto", "autoplay": False}],
     "note_types": [],
     "included_card_templates": [],
+    "recall_templates": [],
     "language": "en",
     "native_language": "en",
     "database_path": DEFAULT_DATABASE_PATH,
@@ -54,6 +55,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "include_new_cards": False,
     "max_new_cards": 10,
     "include_learning_cards": True,
+    "autoplay_sentence_tts": False,
     "strict_import_filter": True,
     "keep_downloaded_archives": False,
     "dictionary_url_template": "",
@@ -84,6 +86,7 @@ class ContextConfig:
     solution_fields: List[SolutionFieldConfig]
     note_types: List[str]
     included_card_templates: List[str]
+    recall_templates: List[str]
     language: str
     native_language: str
     database_path: str
@@ -102,6 +105,7 @@ class ContextConfig:
     include_new_cards: bool
     max_new_cards: int
     include_learning_cards: bool
+    autoplay_sentence_tts: bool
     strict_import_filter: bool
     keep_downloaded_archives: bool
     dictionary_url_template: str
@@ -145,6 +149,10 @@ def load_config(mw: Optional[Any], addon_name: str, deck_name: Optional[str] = N
 
 def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
     note_types = _text_list(raw.get("note_types"))
+    recall_templates = _text_list(raw.get("recall_templates"))
+    custom_search_query = _custom_search_query(raw)
+    if recall_templates and custom_search_query == DEFAULT_CUSTOM_SEARCH_QUERY:
+        custom_search_query = "is:due"
     language = normalize_language_code(str(raw.get("language", "en") or "en"))
     dictionary_url_template = str(raw.get("dictionary_url_template", "") or "").strip()
     if not dictionary_url_template:
@@ -163,13 +171,14 @@ def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
         profile_name=str(raw.get("_active_profile_name", "") or ""),
         active_deck_name=str(raw.get("_active_deck_name", "") or ""),
         deck_scope=_choice(raw.get("deck_scope"), "current", {"current", "configured", "all"}),
-        custom_search_query=_custom_search_query(raw),
+        custom_search_query=custom_search_query,
         deck_name=str(raw.get("deck_name", "") or "").strip(),
         target_field=str(raw.get("target_field", "Front") or "Front").strip() or "Front",
         dictionary_field=dictionary_field,
         solution_fields=solution_fields,
         note_types=[str(item) for item in note_types if str(item).strip()],
         included_card_templates=_text_list(raw.get("included_card_templates")),
+        recall_templates=recall_templates,
         language=language,
         native_language=normalize_language_code(str(raw.get("native_language", "en") or "en")),
         database_path=_normalized_database_path(raw.get("database_path", DEFAULT_DATABASE_PATH)),
@@ -192,6 +201,7 @@ def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
         include_new_cards=_bool(raw.get("include_new_cards"), False),
         max_new_cards=_positive_int(raw.get("max_new_cards"), 10),
         include_learning_cards=_bool(raw.get("include_learning_cards"), True),
+        autoplay_sentence_tts=_bool(raw.get("autoplay_sentence_tts"), False),
         strict_import_filter=_bool(raw.get("strict_import_filter"), True),
         keep_downloaded_archives=_bool(raw.get("keep_downloaded_archives"), False),
         dictionary_url_template=dictionary_url_template,

@@ -5,11 +5,11 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from html.parser import HTMLParser
 from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
 
 from .anki_bridge import card_question_format, card_template_name, note_field_names
 from .language_profiles import get_language_profile, profile_ignored_words
+from .template_fields import visible_question_field_names
 
 
 MAX_INSPECTED_CARDS = 20000
@@ -45,14 +45,20 @@ class AutoConfigResult:
     translation_field: str
     audio_field: str
     included_templates: Tuple[str, ...]
+    recall_templates: Tuple[str, ...]
     included_card_count: int
+    recall_card_count: int
     excluded_card_count: int
     inspected_card_count: int
     target_field_directly_on_question: bool
 
     @property
     def confident(self) -> bool:
-        return bool(self.target_field and self.translation_field and self.included_templates)
+        return bool(
+            self.target_field
+            and self.translation_field
+            and (self.included_templates or self.recall_templates)
+        )
 
 
 def detect_deck_configuration(
@@ -93,21 +99,27 @@ def detect_deck_configuration(
     audio_field = _best_audio_field(fields, samples)
 
     included_templates: Set[str] = set()
+    recall_templates: Set[str] = set()
     included_count = 0
+    recall_count = 0
     excluded_count = 0
     target_key = _field_key(target_field)
+    translation_key = _field_key(translation_field)
     target_question_keys = _target_question_aliases(target_field, fields)
     direct_target_on_question = False
     for card, note in cards:
         question_fields = {
             _field_key(field)
-            for field in _visible_question_field_names(card_question_format(card, note))
+            for field in visible_question_field_names(card_question_format(card, note))
         }
         if target_key and question_fields.intersection(target_question_keys):
             included_templates.add(card_template_name(card, note))
             included_count += 1
             if target_key in question_fields:
                 direct_target_on_question = True
+        elif translation_key and translation_key in question_fields:
+            recall_templates.add(card_template_name(card, note))
+            recall_count += 1
         else:
             excluded_count += 1
 
@@ -116,7 +128,9 @@ def detect_deck_configuration(
         translation_field=translation_field,
         audio_field=audio_field,
         included_templates=tuple(sorted(included_templates, key=str.casefold)),
+        recall_templates=tuple(sorted(recall_templates, key=str.casefold)),
         included_card_count=included_count,
+        recall_card_count=recall_count,
         excluded_card_count=excluded_count,
         inspected_card_count=len(cards),
         target_field_directly_on_question=direct_target_on_question,
@@ -131,11 +145,15 @@ def auto_config_summary(
     if not result.confident:
         return "Auto-Configure could not identify a safe card direction. No settings were changed."
     return (
-        "Detected %s %s to %s reading cards. Excluded %s reverse cards. Setup complete!"
+        "Detected %s %s to %s recognition cards and %s %s to %s recall cards. "
+        "Excluded %s unclassified cards."
         % (
             format(result.included_card_count, ","),
             language_name,
             native_language_name,
+            format(result.recall_card_count, ","),
+            native_language_name,
+            language_name,
             format(result.excluded_card_count, ","),
         )
     )
@@ -278,55 +296,3 @@ def _target_question_aliases(target_field: str, fields: Sequence[str]) -> Set[st
             if any(_field_key(field) == stripped for field in fields):
                 aliases.add(stripped)
     return aliases
-
-
-class _VisibleTemplateParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self.hidden_stack: List[bool] = []
-        self.visible_text: List[str] = []
-
-    def handle_starttag(self, tag: str, attrs) -> None:
-        attributes = {str(key).casefold(): str(value or "") for key, value in attrs}
-        classes = set(attributes.get("class", "").casefold().split())
-        style = re.sub(r"\s+", "", attributes.get("style", "").casefold())
-        hidden = (
-            bool(self.hidden_stack and self.hidden_stack[-1])
-            or "hidden" in classes
-            or "hidden" in attributes
-            or "display:none" in style
-            or "visibility:hidden" in style
-        )
-        self.hidden_stack.append(hidden)
-
-    def handle_startendtag(self, tag: str, attrs) -> None:
-        self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
-
-    def handle_endtag(self, tag: str) -> None:
-        if self.hidden_stack:
-            self.hidden_stack.pop()
-
-    def handle_data(self, data: str) -> None:
-        if not self.hidden_stack or not self.hidden_stack[-1]:
-            self.visible_text.append(data)
-
-
-def _visible_question_field_names(qfmt: str) -> Set[str]:
-    parser = _VisibleTemplateParser()
-    try:
-        parser.feed(str(qfmt or ""))
-        parser.close()
-    except Exception:
-        return set()
-    visible_template = " ".join(parser.visible_text)
-    names = set()
-    for match in re.finditer(r"{{\s*([^{}]+?)\s*}}", visible_template):
-        expression = match.group(1).strip()
-        if expression[:1] in {"#", "/", "^"}:
-            expression = expression[1:].strip()
-        if ":" in expression:
-            expression = expression.rsplit(":", 1)[-1].strip()
-        if expression and expression not in {"Tags", "FrontSide", "Deck", "Subdeck", "Card"}:
-            names.add(expression)
-    return names

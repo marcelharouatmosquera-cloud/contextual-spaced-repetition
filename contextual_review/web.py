@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from html import escape
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -19,12 +20,16 @@ def render_task_html(
     is_favorite: bool = False,
 ) -> str:
     theme = _theme(dark_mode)
+    task_type = _review_task_type(task)
+    has_recall = _review_task_has_recall(task)
     payload = {
         "sentenceId": task.sentence_id,
         "sentenceText": task.full_text,
         "translation": task.translation or "",
         "targetWords": _target_word_payload(task.target_words),
         "matchingMode": task.matching_mode,
+        "taskType": task_type,
+        "hasRecall": has_recall,
     }
     payload_json = _script_json(payload)
     sentence_html = _render_sentence_tokens(task.tokens, theme)
@@ -48,15 +53,18 @@ def render_task_html(
     </div>
   </div>""" % (total, completed, progress_percent)
     undo_disabled = "" if can_undo else " disabled"
-    return _page(
-        """
+    page_template = """
 <main class="review-shell">
   <button id="favorite" class="compact-action" type="button" title="Save sentence to favorites" aria-label="Save sentence to favorites" aria-pressed="__FAVORITE_PRESSED__">__FAVORITE_SYMBOL__</button>
   <header class="review-header">
-    <p class="review-guidance">Read the sentence, then click any highlighted word you forgot.</p>
+    <p id="review-guidance" class="review-guidance">Read the sentence, then click any highlighted word you forgot.</p>
     <div id="selection-summary" class="selection-summary" aria-live="polite"></div>
   </header>
   <section id="sentence" class="sentence" aria-live="polite">__SENTENCE__</section>
+  <section id="question-translation" class="question-translation" hidden>
+    <h2>Sentence Translation</h2>
+    <div id="question-translation-text" class="translation"></div>
+  </section>
   <div id="context-translation-tooltip" class="context-translation-tooltip" role="status" hidden></div>
   <section class="sentence-audio-controls">
     <button id="speak-sentence" class="compact-action" type="button" title="Read this sentence using an online voice">&#x1F50A; Read sentence</button>
@@ -83,7 +91,10 @@ def render_task_html(
 </main>
 <script>
 const task = __TASK__;
+const reviewGuidance = document.getElementById("review-guidance");
 const sentence = document.getElementById("sentence");
+const questionTranslation = document.getElementById("question-translation");
+const questionTranslationText = document.getElementById("question-translation-text");
 const contextTranslationTooltip = document.getElementById("context-translation-tooltip");
 const solution = document.getElementById("solution");
 const translation = document.getElementById("translation");
@@ -104,6 +115,7 @@ const contextTranslationCache = new Map();
 let contextHoverTimer = null;
 let contextHoverRequest = 0;
 let contextHoverNode = null;
+let solutionRevealed = false;
 
 function forceReadable(node, color) {
   node.style.setProperty("color", color, "important");
@@ -115,23 +127,29 @@ function setup() {
   forceReadable(document.documentElement, textColor);
   forceReadable(document.body, textColor);
   forceReadable(sentence, textColor);
+  forceReadable(questionTranslation, textColor);
   forceReadable(solution, textColor);
+  reviewGuidance.textContent = guidanceText();
   document.querySelectorAll(".word").forEach((span) => {
     forceReadable(span, textColor);
   });
   document.querySelectorAll(".word.target").forEach((span) => {
-    span.tabIndex = 0;
-    span.setAttribute("role", "button");
-    span.setAttribute("aria-pressed", "false");
-    span.setAttribute("aria-label", `Mark unknown: ${span.textContent}`);
+    configureTargetAccessibility(span);
     span.addEventListener("click", () => {
+      if (!targetCanBeMarked(span)) {
+        return;
+      }
       toggleUnknown(span);
     });
     span.addEventListener("keydown", (event) => {
       if (event.key === " " || event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
-        span.click();
+        if (targetCanBeMarked(span)) {
+          span.click();
+        } else {
+          revealSolution();
+        }
       }
     });
   });
@@ -140,7 +158,43 @@ function setup() {
     span.addEventListener("mouseleave", () => cancelContextTranslation(span));
   });
   renderSolution();
+  if (Boolean(task.hasRecall)) {
+    questionTranslationText.textContent = task.translation || "No stored sentence translation.";
+    questionTranslation.hidden = false;
+    speakSentence.disabled = true;
+    speakSentence.setAttribute("aria-disabled", "true");
+    ttsStatus.textContent = "Available after Show Solution";
+  }
   syncReviewControls();
+}
+
+function guidanceText() {
+  if (task.taskType === "mixed") {
+    return "Recall each blank and read the highlighted words, then show the solution.";
+  }
+  if (Boolean(task.hasRecall)) {
+    return "Say the missing target-language word for each hint, then show the solution.";
+  }
+  return "Read the sentence, then click any highlighted word you forgot.";
+}
+
+function targetCanBeMarked(span) {
+  return !span.classList.contains("recall-blank") || span.dataset.revealed === "true";
+}
+
+function configureTargetAccessibility(span) {
+  if (!targetCanBeMarked(span)) {
+    const hint = (span.dataset.hint || "").trim();
+    span.tabIndex = -1;
+    span.setAttribute("role", "note");
+    span.removeAttribute("aria-pressed");
+    span.setAttribute("aria-label", hint ? `Missing word. Hint: ${hint}` : "Missing word");
+    return;
+  }
+  span.tabIndex = 0;
+  span.setAttribute("role", "button");
+  span.setAttribute("aria-pressed", span.classList.contains("unknown") ? "true" : "false");
+  span.setAttribute("aria-label", `Mark unknown: ${span.textContent}`);
 }
 
 function renderSolution() {
@@ -318,7 +372,8 @@ speakSentence.addEventListener("click", () => {
 });
 
 window.contextualTtsFinished = (error) => {
-  speakSentence.disabled = false;
+  speakSentence.disabled = Boolean(task.hasRecall) && !solutionRevealed;
+  speakSentence.setAttribute("aria-disabled", speakSentence.disabled ? "true" : "false");
   speakSentence.textContent = "🔊 Read sentence";
   ttsStatus.textContent = error || "Playing";
   if (!error) {
@@ -442,7 +497,7 @@ function toggleUnknown(span) {
 }
 
 function toggleUnknownForCardId(cardId) {
-  const nodes = targetNodesForCardId(cardId);
+  const nodes = targetNodesForCardId(cardId).filter(targetCanBeMarked);
   const shouldMarkUnknown = nodes.some((node) => !node.classList.contains("unknown"));
   nodes.forEach((node) => {
     setUnknownState(node, shouldMarkUnknown);
@@ -464,12 +519,34 @@ function revealSolution() {
   if (!solution.hidden) {
     return;
   }
+  solutionRevealed = true;
+  revealRecallBlanks();
+  questionTranslation.hidden = true;
   solution.hidden = false;
   showSolution.hidden = true;
   submit.disabled = false;
+  if (Boolean(task.hasRecall)) {
+    speakSentence.disabled = false;
+    speakSentence.setAttribute("aria-disabled", "false");
+    ttsStatus.textContent = "";
+  }
   playAutoplayAudio();
   syncReviewControls();
+  pycmd(JSON.stringify({
+    action: "solution_revealed",
+    sentence_id: task.sentenceId
+  }));
   submit.focus();
+}
+
+function revealRecallBlanks() {
+  document.querySelectorAll(".word.target.recall-blank").forEach((span) => {
+    span.textContent = span.dataset.answer || "…";
+    span.dataset.revealed = "true";
+    span.classList.add("revealed");
+    configureTargetAccessibility(span);
+    forceReadable(span, textColor);
+  });
 }
 
 function playAutoplayAudio() {
@@ -548,7 +625,7 @@ function syncReviewControls() {
 
 function syncTargetWordButtons() {
   document.querySelectorAll(".mark-unknown").forEach((button) => {
-    const nodes = targetNodesForCardId(button.dataset.cardId);
+    const nodes = targetNodesForCardId(button.dataset.cardId).filter(targetCanBeMarked);
     const isUnknown = nodes.length > 0 && nodes.every((node) => node.classList.contains("unknown"));
     button.disabled = nodes.length === 0;
     button.classList.toggle("unknown", isUnknown);
@@ -567,6 +644,13 @@ function syncLookupState() {
 
 function syncSelectionSummary() {
   const targets = Array.from(document.querySelectorAll(".word.target"));
+  const hiddenRecallTargets = targets.filter((node) => !targetCanBeMarked(node));
+  if (hiddenRecallTargets.length) {
+    const recallCardIds = new Set(cardIdsForNodes(hiddenRecallTargets));
+    const recallCount = recallCardIds.size || hiddenRecallTargets.length;
+    selectionSummary.textContent = `${recallCount} recall ${recallCount === 1 ? "blank" : "blanks"} · Space/Enter to show the solution`;
+    return;
+  }
   const unknownTargets = selectedUnknownTargets();
   const totalCardIds = new Set(cardIdsForNodes(targets));
   const unknownCardIds = new Set(cardIdsForNodes(unknownTargets));
@@ -619,17 +703,34 @@ function isInteractiveShortcutTarget(target) {
 
 setup();
 </script>
-""".replace("__TASK__", payload_json)
-        .replace("__SENTENCE__", sentence_html)
-        .replace("__PROGRESS__", progress_html)
-        .replace("__UNDO_DISABLED__", undo_disabled)
-        .replace("__FAVORITE_PRESSED__", "true" if is_favorite else "false")
-        .replace("__FAVORITE_SYMBOL__", "&#x2605;" if is_favorite else "&#x2606;")
-        .replace("__TEXT_COLOR__", theme["fg"])
-        .replace("__UNKNOWN_COLOR__", theme["unknown_fg"]),
+"""
+    page_body = _substitute_placeholders_once(
+        page_template,
+        {
+            "__TASK__": payload_json,
+            "__SENTENCE__": sentence_html,
+            "__PROGRESS__": progress_html,
+            "__UNDO_DISABLED__": undo_disabled,
+            "__FAVORITE_PRESSED__": "true" if is_favorite else "false",
+            "__FAVORITE_SYMBOL__": "&#x2605;" if is_favorite else "&#x2606;",
+            "__TEXT_COLOR__": theme["fg"],
+            "__UNKNOWN_COLOR__": theme["unknown_fg"],
+        },
+    )
+    return _page(
+        page_body,
         theme,
         font_size,
     )
+
+
+def _substitute_placeholders_once(template: str, replacements: Dict[str, str]) -> str:
+    """Replace template markers without rescanning inserted, untrusted text."""
+    if not replacements:
+        return template
+
+    pattern = re.compile("|".join(re.escape(key) for key in replacements))
+    return pattern.sub(lambda match: replacements[match.group(0)], template)
 
 
 def render_message_html(
@@ -681,6 +782,37 @@ def _action_button(label: Optional[str], action: Optional[str], primary: bool = 
     return ""
 
 
+def _review_direction(value: Any) -> str:
+    return "recall" if str(value or "").strip().casefold() == "recall" else "recognition"
+
+
+def _review_task_has_recall(task: ReviewTask) -> bool:
+    explicit = getattr(task, "has_recall", None)
+    if explicit is not None:
+        return bool(explicit)
+    return any(
+        _review_direction(getattr(token, "direction", "")) == "recall"
+        for token in (getattr(task, "tokens", ()) or ())
+        if getattr(token, "is_target", False)
+    )
+
+
+def _review_task_type(task: ReviewTask) -> str:
+    explicit = str(getattr(task, "task_type", "") or "").strip().casefold()
+    if explicit in {"recognition", "recall", "mixed"}:
+        return explicit
+    directions = {
+        _review_direction(getattr(token, "direction", ""))
+        for token in (getattr(task, "tokens", ()) or ())
+        if getattr(token, "is_target", False)
+    }
+    if directions == {"recall"}:
+        return "recall"
+    if "recall" in directions:
+        return "mixed"
+    return "recognition"
+
+
 def _target_word_payload(target_words: Sequence[Any]) -> List[Dict[str, Any]]:
     payload: List[Dict[str, Any]] = []
     for item in target_words:
@@ -689,6 +821,7 @@ def _target_word_payload(target_words: Sequence[Any]) -> List[Dict[str, Any]]:
                 "cardId": getattr(item, "card_id", 0),
                 "word": getattr(item, "target_word", "") or "",
                 "definition": getattr(item, "definition", "") or "",
+                "direction": _review_direction(getattr(item, "direction", "")),
                 "solutionFields": _solution_field_payload(
                     getattr(item, "solution_fields", ()) or ()
                 ),
@@ -728,7 +861,11 @@ def _render_sentence_tokens(tokens: List[Token], theme: Dict[str, str]) -> str:
         if not token.is_word:
             parts.append(escape(token.text))
             continue
+        direction = _review_direction(getattr(token, "direction", ""))
+        is_recall = bool(token.is_target and direction == "recall")
         classes = "word target" if token.is_target else "word context"
+        if is_recall:
+            classes += " recall-blank"
         style = (
             "color:%s !important;"
             "-webkit-text-fill-color:%s !important;"
@@ -736,8 +873,13 @@ def _render_sentence_tokens(tokens: List[Token], theme: Dict[str, str]) -> str:
         ) % (theme["fg"], theme["fg"])
         card_ids = ",".join(str(card_id) for card_id in token.card_ids)
         first_card_id = str(token.card_ids[0]) if token.card_ids else ""
+        hint = str(getattr(token, "hint", "") or "").strip()
+        answer = token.text if is_recall else ""
+        visible_text = "[ %s ]" % hint if hint else "[ … ]"
+        if not is_recall:
+            visible_text = token.text
         parts.append(
-            '<span class="%s" data-key="%s" data-lemma="%s" data-word="%s" data-card-id="%s" data-card-ids="%s" style="%s">%s</span>'
+            '<span class="%s" data-key="%s" data-lemma="%s" data-word="%s" data-card-id="%s" data-card-ids="%s" data-direction="%s" data-answer="%s" data-hint="%s" style="%s">%s</span>'
             % (
                 classes,
                 escape(token.match_key or token.lemma, quote=True),
@@ -745,8 +887,11 @@ def _render_sentence_tokens(tokens: List[Token], theme: Dict[str, str]) -> str:
                 escape(token.lookup_text or token.text, quote=True),
                 escape(first_card_id, quote=True),
                 escape(card_ids, quote=True),
+                escape(direction, quote=True),
+                escape(answer, quote=True),
+                escape(hint, quote=True),
                 style,
-                escape(token.text),
+                escape(visible_text),
             )
         )
     return "".join(parts)
@@ -839,6 +984,7 @@ body {
 
 .review-header,
 .sentence,
+.question-translation,
 .sentence-audio-controls,
 .solution,
 .review-shell > .actions {
@@ -962,6 +1108,37 @@ body {
   box-shadow: inset 0 -3px 0 rgba(23, 78, 166, 0.28);
 }
 
+.word.target.recall-blank:not(.revealed) {
+  display: inline-block;
+  min-width: 3.5em;
+  border: 1px dashed var(--border);
+  background: color-mix(in srgb, var(--button-bg) 82%, var(--target) 18%);
+  box-shadow: none;
+  cursor: default;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.word.target.recall-blank:not(.revealed):hover,
+.word.target.recall-blank:not(.revealed):focus {
+  background: color-mix(in srgb, var(--button-bg) 82%, var(--target) 18%);
+}
+
+.word.target.recall-blank.revealed {
+  animation: recall-answer-reveal 180ms ease-out;
+}
+
+@keyframes recall-answer-reveal {
+  from {
+    opacity: 0.35;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .word.unknown {
   background: var(--unknown-bg);
   color: var(--unknown-fg) !important;
@@ -999,6 +1176,7 @@ body {
   gap: 18px;
 }
 
+.question-translation h2,
 .solution-block h2 {
   margin: 0 0 6px;
   color: var(--fg) !important;
@@ -1016,6 +1194,10 @@ body {
   -webkit-text-fill-color: var(--muted) !important;
   font-size: 22px;
   line-height: 1.45;
+}
+
+.question-translation {
+  max-width: 980px;
 }
 
 .target-words {
@@ -1221,6 +1403,12 @@ p {
 
   .actions button {
     flex: 1 1 140px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .word.target.recall-blank.revealed {
+    animation: none;
   }
 }
 </style>

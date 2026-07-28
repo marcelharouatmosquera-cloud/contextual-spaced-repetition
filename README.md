@@ -90,13 +90,20 @@ can be found inside sentences that do not separate words with spaces.
 
 ## How To Review
 
-In the review window, read the sentence and focus on the highlighted target
-words. Click only the target words you did not remember. Leave words you knew
-unclicked.
+Contextual Review uses the direction of each configured card template:
+
+- Recognition cards show the target-language word in the sentence as before.
+- Recall cards replace the matched, inflected word with a `[ translation ]`
+  blank and show the stored sentence translation on the question side. Say or
+  think of the missing target-language form, then press `Space` or `Enter`.
+
+`Show Solution` reveals every recall blank. Click only the revealed or
+highlighted target words you did not remember; leave words you knew unclicked.
 
 Use `Read sentence` to hear the current sentence with an online Microsoft Edge
-voice. Audio is requested only when you press the button. Generated clips are
-cached for quick replay, removed after seven days, and limited to 100 MB.
+voice. On recall questions, sentence audio remains unavailable until the answer
+is revealed so it cannot give away the missing word. Generated clips are cached
+for quick replay, removed after seven days, and limited to 100 MB.
 
 Use `Show Solution` to reveal the stored sentence translation and the
 configured text, image, or audio fields for each matched card. Use `Grade & Next`
@@ -227,9 +234,8 @@ Settings opens on `Basic Setup`. Most users only need to:
 - `Choose a deck`: Settings opens with deck buttons. Pick the deck you want,
   and the saved settings apply to that deck and its subdecks.
 - Use `Preview Auto-Configure` to detect target, translation, and audio fields.
-  It reads the card templates and includes only directions where the target
-  field appears on the question side. English-to-target production cards are
-  excluded without requiring card numbers or Anki search syntax.
+  It reads the question side of each card template, mapping target-to-native
+  templates to recognition and native-to-target templates to contextual recall.
 - Choose the language being learned.
 - Map the target word, translation, and optional audio fields.
 - Choose due cards, new cards with a separate maximum, and learning cards.
@@ -237,10 +243,10 @@ Settings opens on `Basic Setup`. Most users only need to:
   recommends 100,000 to 200,000 sentences, and supports importing more or
   deleting some or all.
 
-`Advanced / Nerd Settings` contains Anki search syntax, card templates,
-matching behavior, sentence lengths, database paths, dictionary URLs, import
-filters, and additional solution fields. New profiles default to lemma-family
-matching and sentences between 4 and 15 words.
+`Advanced / Nerd Settings` contains Anki search syntax, separate recognition
+and recall template lists, matching behavior, sentence lengths, database paths,
+dictionary URLs, import filters, and additional solution fields. New profiles
+default to lemma-family matching and sentences between 4 and 15 words.
 
 Settings discovers note fields from the deck you chose and offers them in
 editable dropdowns. Use `Refresh fields from selected deck` after changing

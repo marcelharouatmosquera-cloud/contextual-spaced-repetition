@@ -39,6 +39,28 @@ class ConfigTests(unittest.TestCase):
         config = normalize_config({})
 
         self.assertEqual(config.custom_search_query, DEFAULT_CUSTOM_SEARCH_QUERY)
+        self.assertEqual(config.recall_templates, [])
+
+    def test_recall_templates_unlock_exact_legacy_reverse_filter(self) -> None:
+        config = normalize_config(
+            {
+                "custom_search_query": DEFAULT_CUSTOM_SEARCH_QUERY,
+                "recall_templates": "Card 2, Production",
+            }
+        )
+
+        self.assertEqual(config.recall_templates, ["Card 2", "Production"])
+        self.assertEqual(config.custom_search_query, "is:due")
+
+    def test_recall_templates_preserve_an_intentional_custom_search(self) -> None:
+        config = normalize_config(
+            {
+                "custom_search_query": "is:due -tag:suspended-from-context",
+                "recall_templates": ["Card 2"],
+            }
+        )
+
+        self.assertEqual(config.custom_search_query, "is:due -tag:suspended-from-context")
 
     def test_beginner_defaults_use_lemma_matching_and_readable_sentences(self) -> None:
         config = normalize_config({})
@@ -48,6 +70,12 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.include_due_cards)
         self.assertFalse(config.include_new_cards)
         self.assertEqual(config.max_new_cards, 10)
+        self.assertFalse(config.autoplay_sentence_tts)
+
+    def test_sentence_tts_autoplay_can_be_enabled(self) -> None:
+        config = normalize_config({"autoplay_sentence_tts": True})
+
+        self.assertTrue(config.autoplay_sentence_tts)
 
     def test_load_config_migrates_legacy_search_query(self) -> None:
         mw = FakeMw({"search_query": "is:due deck:Russian"})
@@ -142,6 +170,46 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.target_field, "German")
         self.assertEqual(config.database_path, "user_files/german_sentences.db")
         self.assertEqual([field.field for field in config.solution_fields], ["English"])
+
+    def test_legacy_deck_profile_without_recall_templates_stays_recognition_only(self) -> None:
+        mw = FakeMw(
+            {
+                "deck_configs": [
+                    {
+                        "name": "German vocabulary",
+                        "deck_name": "German",
+                        "language": "de",
+                        "included_card_templates": ["Reading"],
+                    }
+                ]
+            }
+        )
+
+        config = load_config(mw, "addon", deck_name="German")
+
+        self.assertEqual(config.included_card_templates, ["Reading"])
+        self.assertEqual(config.recall_templates, [])
+
+    def test_deck_profile_can_enable_recall_templates(self) -> None:
+        mw = FakeMw(
+            {
+                "deck_configs": [
+                    {
+                        "name": "German vocabulary",
+                        "deck_name": "German",
+                        "language": "de",
+                        "included_card_templates": ["Reading"],
+                        "recall_templates": ["Production"],
+                    }
+                ]
+            }
+        )
+
+        config = load_config(mw, "addon", deck_name="German")
+
+        self.assertEqual(config.included_card_templates, ["Reading"])
+        self.assertEqual(config.recall_templates, ["Production"])
+        self.assertEqual(config.custom_search_query, "is:due")
 
     def test_deck_profile_matches_subdecks_by_default(self) -> None:
         mw = FakeMw(

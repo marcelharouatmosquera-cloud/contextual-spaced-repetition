@@ -38,15 +38,16 @@ Use this before publishing a build to AnkiWeb.
 - Import a small `.txt` or `.tsv` corpus and verify the progress dialog updates.
 - Import a small word-forms TSV and confirm diagnostics reports word-form mappings.
 - Confirm Settings opens on Basic Setup and Advanced / Nerd Settings contains technical controls.
-- Confirm Auto-Configure detects target and translation fields, selects the reading card template by name, and excludes the reverse template.
+- Confirm Auto-Configure detects target and translation fields, maps target-to-native templates to recognition, and maps native-to-target templates to recall.
 - Confirm the Basic field mapping discovers target, translation, and optional audio fields.
 - Confirm the Due, New with maximum, and Learning card choices affect card collection.
 - Confirm the Sentence Library shows the language count, imports toward a selected target, and can delete some or all sentences for that language.
-- In Advanced / Nerd Settings, confirm Included card templates can limit review to one direction and the Front-only option skips reverse cards.
+- In Advanced / Nerd Settings, confirm the separate Recognition and Recall template lists route cards correctly and the Front-only option applies only to recognition cards.
 - Start `Tools > Contextual Review > Start Review` on a deck with due cards.
 - Set `Vocabulary matching` to `Lemma family` and confirm a seeded form such as `went -> go` can grade the `go` card.
 - Import Japanese text containing `。` without spaces and confirm sentences split, import, match, and highlight an embedded target expression.
-- Reveal the solution with Space/Enter and confirm it shows the sentence translation plus Target Words definitions.
+- On a recall card, confirm the exact inflected target form is replaced by its native-language hint, the sentence translation is visible before reveal, and TTS is blocked.
+- Reveal the solution with Space/Enter and confirm the blank becomes the target form, TTS becomes available, and Target Words definitions are shown.
 - Toggle the favorite star, restart Anki, and confirm Favorite Sentences still shows the saved sentence and allows removal.
 - For a sentence without a stored translation, confirm `Translate Sentence` returns a Google translation in the window and hovering a non-target word shows a quick tooltip translation.
 - Mark one target word as unknown, press Next, and confirm the matched card receives `Again`.

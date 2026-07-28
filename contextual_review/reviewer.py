@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 from urllib.parse import quote, unquote, urlsplit
 
 from .anki_bridge import BatchUndoSnapshot, answer_review_task, collect_due_cards, restore_answer_snapshot
@@ -17,6 +18,17 @@ from .web import render_message_html, render_task_html
 
 RECENT_SENTENCE_HISTORY_PATH = Path("user_files") / "recent_sentence_history.json"
 RECENT_SENTENCE_LIMIT = 200
+DEFAULT_REVIEW_WINDOW_SIZE = (1200, 760)
+REVIEW_WINDOW_SCREEN_FRACTION = (0.92, 0.88)
+
+
+@dataclass(frozen=True)
+class AnkiUndoMarker:
+    last_step: int
+    label: str
+
+
+ReviewUndoHandle = Optional[Union[BatchUndoSnapshot, AnkiUndoMarker]]
 
 
 def open_contextual_review_dialog(mw: Any, addon_name: str) -> "ContextualReviewDialog":  # pragma: no cover
@@ -35,7 +47,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
         self._dialog = QDialog(mw)
         self._dialog.setWindowTitle("Contextual Review")
-        self._dialog.resize(900, 520)
+        self._resize_for_available_screen()
         setattr(self._dialog, "_contextual_review_controller", self)
 
         self.mw = mw
@@ -59,8 +71,11 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             if self.database_path_error
             else _load_recent_sentence_ids(self.db_path, self.config.language)
         )
+        # Cards whose next scheduled step has moved beyond today's lesson.
+        # The historical name is retained because it is also used by undo and
+        # due-card filtering throughout this controller.
         self.answered_card_ids: Set[int] = set()
-        self.review_history: List[Tuple[ReviewTask, List[int], Optional[BatchUndoSnapshot]]] = []
+        self.review_history: List[Tuple[ReviewTask, List[int], ReviewUndoHandle]] = []
         self._session_results: List[Tuple[int, int]] = []
         self._session_forgotten_words: List[List[str]] = []
         self._session_summary_shown = False
@@ -72,6 +87,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self.today_goal_card_ids: Set[int] = set()
         self._today_goal_initialized = False
         self.active_task: Optional[ReviewTask] = None
+        self._revealed_sentence_id: Optional[int] = None
+        self._tts_sentence_ids_in_flight: Set[int] = set()
         self._loading = False
         self._started = False
         self._selection_generation = 0
@@ -93,6 +110,20 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 show_refresh=False,
             )
         )
+
+    def _resize_for_available_screen(self) -> None:
+        """Open spaciously without extending beyond the usable desktop."""
+        width, height = DEFAULT_REVIEW_WINDOW_SIZE
+        try:
+            available = self._dialog.screen().availableGeometry()
+            width = min(width, max(1, int(available.width() * REVIEW_WINDOW_SCREEN_FRACTION[0])))
+            height = min(height, max(1, int(available.height() * REVIEW_WINDOW_SCREEN_FRACTION[1])))
+        except (AttributeError, RuntimeError):
+            # The screen can be unavailable briefly while Qt is constructing
+            # the dialog. The generous default is still preferable to the old
+            # cramped 900 x 520 window.
+            pass
+        self._dialog.resize(width, height)
 
     def show(self) -> None:
         self._dialog.show()
@@ -152,14 +183,18 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             else:
                 collected_due_cards = collect_due_cards(self.mw, self.config)
                 self._due_cards_cache = tuple(collected_due_cards)
-            if not getattr(self, "_today_goal_initialized", False):
+            if not cache_hit:
                 full_today_ids = getattr(collected_due_cards, "today_card_ids", None)
-                self.today_goal_card_ids = set(
+                collected_today_ids = set(
                     full_today_ids
                     if full_today_ids is not None
                     else (card.card_id for card in collected_due_cards)
                 )
-                self._today_goal_initialized = True
+                if getattr(self, "_today_goal_initialized", False):
+                    self.today_goal_card_ids.update(collected_today_ids)
+                else:
+                    self.today_goal_card_ids = collected_today_ids
+                    self._today_goal_initialized = True
             # A cached DueCard reflects the card's state before it was graded.
             # Hide every card already reviewed from that cache, including cards
             # answered Again. Once the cache is refreshed, Anki's current due
@@ -412,6 +447,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._play_media(payload.get("source") or "")
         elif payload.get("action") == "speak_sentence":
             self._request_sentence_tts()
+        elif payload.get("action") == "solution_revealed":
+            self._mark_solution_revealed(payload.get("sentence_id"))
         elif payload.get("action") == "settings":
             self._open_settings()
         elif payload.get("action") == "diagnostics":
@@ -450,9 +487,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return
 
-        self.answered_card_ids.update(summary.known_card_ids)
+        completed_card_ids = getattr(summary, "completed_card_ids", None)
+        if completed_card_ids is None:
+            # Compatibility for older bridges and lightweight test doubles.
+            completed_card_ids = summary.known_card_ids
+        self.answered_card_ids.update(completed_card_ids)
+        undo_handle: ReviewUndoHandle = summary.undo_snapshot
+        if undo_handle is None:
+            undo_handle = _capture_anki_undo_marker(self.mw)
         self.review_history.append(
-            (self.active_task, list(summary.answered_card_ids), summary.undo_snapshot)
+            (self.active_task, list(summary.answered_card_ids), undo_handle)
         )
         session_results = getattr(self, "_session_results", None)
         if session_results is None:
@@ -477,21 +521,27 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self.active_task = task
             self._render_task(task)
             return
-        self._load_next_task()
+        # Re-run Anki's due search after each sentence. This drops cards buried
+        # since the window opened and admits intraday steps as soon as their
+        # scheduler delay has actually elapsed.
+        self._due_cards_cache = None
+        self._load_next_task(refresh_due_cards=True)
 
     def _undo_last_review(self) -> None:
         if not self.review_history:
             return
 
         interrupted_task = self.active_task
-        task, answered_card_ids, undo_snapshot = self.review_history.pop()
+        task, answered_card_ids, undo_handle = self.review_history.pop()
         try:
-            if undo_snapshot is not None:
-                restore_answer_snapshot(self.mw, undo_snapshot)
+            if isinstance(undo_handle, BatchUndoSnapshot):
+                restore_answer_snapshot(self.mw, undo_handle)
+            elif isinstance(undo_handle, AnkiUndoMarker):
+                _undo_marked_anki_operation(self.mw, undo_handle)
             else:
                 _undo_last_anki_operation(self.mw)
         except Exception as exc:
-            self.review_history.append((task, answered_card_ids, undo_snapshot))
+            self.review_history.append((task, answered_card_ids, undo_handle))
             self._set_html(
                 render_message_html(
                     "Could not undo last review",
@@ -523,6 +573,9 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
     def _render_task(self, task: ReviewTask) -> None:
         from .favorites import is_favorite_sentence
 
+        # Rendering starts a fresh question phase, including when Previous
+        # restores the same sentence that was just on screen.
+        self._revealed_sentence_id = None
         completed, total = self._today_progress()
         database_path = getattr(self, "db_path", None)
         try:
@@ -543,6 +596,25 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 is_favorite=favorite,
             )
         )
+        if self.config.autoplay_sentence_tts and not _task_has_recall(task):
+            self._request_sentence_tts()
+
+    def _mark_solution_revealed(self, sentence_id: Any = None) -> None:
+        task = self.active_task
+        if task is None:
+            return
+        try:
+            reported_sentence_id = int(sentence_id)
+        except (TypeError, ValueError):
+            reported_sentence_id = task.sentence_id
+        if reported_sentence_id != task.sentence_id:
+            return
+        if getattr(self, "_revealed_sentence_id", None) == task.sentence_id:
+            return
+
+        self._revealed_sentence_id = task.sentence_id
+        if _task_has_recall(task) and self.config.autoplay_sentence_tts:
+            self._request_sentence_tts()
 
     def _toggle_active_favorite(self) -> None:
         task = self.active_task
@@ -571,12 +643,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
     def _today_progress(self) -> Tuple[int, int]:
         goal_ids = set(getattr(self, "today_goal_card_ids", set()))
-        reviewed_ids = {
-            card_id
-            for _task, card_ids, _snapshot in getattr(self, "review_history", [])
-            for card_id in card_ids
-        }
-        return len(reviewed_ids & goal_ids), len(goal_ids)
+        completed_ids = set(getattr(self, "answered_card_ids", set()))
+        return len(completed_ids & goal_ids), len(goal_ids)
 
     def _session_summary_text(self) -> str:
         results = list(getattr(self, "_session_results", []) or [])
@@ -806,10 +874,25 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         if task is None:
             self._notify_tts_finished("There is no sentence to read.")
             return
+        if (
+            _task_has_recall(task)
+            and getattr(self, "_revealed_sentence_id", None) != task.sentence_id
+        ):
+            self._notify_tts_finished("Show the solution before playing this recall sentence.")
+            return
 
         sentence_id = task.sentence_id
         sentence = task.full_text
         language = task.language or self.config.language
+        in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
+        if in_flight is None:
+            in_flight = set()
+            self._tts_sentence_ids_in_flight = in_flight
+        if sentence_id in in_flight:
+            # Autoplay and a quick manual click can arrive back-to-back. Let the
+            # original request own playback and the eventual UI completion.
+            return
+        in_flight.add(sentence_id)
 
         def generate() -> Path:
             from .tts import synthesize_sentence
@@ -825,6 +908,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 )
                 return
             except Exception as exc:
+                in_flight.discard(sentence_id)
                 self._notify_tts_finished(_friendly_tts_error(exc))
                 return
 
@@ -834,10 +918,20 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._notify_tts_finished("")
         except Exception as exc:
             self._notify_tts_finished(_friendly_tts_error(exc))
+        finally:
+            in_flight.discard(sentence_id)
 
     def _on_sentence_tts_done(self, future: Any, sentence_id: int) -> None:
+        in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
+        if in_flight is not None:
+            in_flight.discard(sentence_id)
         active_task = self.active_task
         if active_task is None or active_task.sentence_id != sentence_id:
+            return
+        if (
+            _task_has_recall(active_task)
+            and getattr(self, "_revealed_sentence_id", None) != active_task.sentence_id
+        ):
             return
         try:
             path = Path(future.result())
@@ -884,6 +978,21 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             pass
 
 
+def _task_has_recall(task: ReviewTask) -> bool:
+    explicit = getattr(task, "has_recall", None)
+    if explicit is not None:
+        return bool(explicit)
+    if str(getattr(task, "task_type", "") or "").strip().casefold() in {
+        "recall",
+        "mixed",
+    }:
+        return True
+    return any(
+        str(getattr(token, "direction", "") or "").strip().casefold() == "recall"
+        for token in (getattr(task, "tokens", ()) or ())
+    )
+
+
 def _bridge_message(args: Any) -> str:
     for arg in args:
         if isinstance(arg, str):
@@ -924,6 +1033,41 @@ def _undo_last_anki_operation(mw: Any) -> None:
                 method()
                 return
     raise RuntimeError("Anki undo is unavailable.")
+
+
+def _capture_anki_undo_marker(mw: Any) -> Optional[AnkiUndoMarker]:
+    col = getattr(mw, "col", None)
+    undo_status = getattr(col, "undo_status", None)
+    if not callable(undo_status):
+        return None
+    try:
+        status = undo_status()
+        last_step = int(getattr(status, "last_step", 0) or 0)
+        label = str(getattr(status, "undo", "") or "")
+    except Exception:
+        return None
+    if last_step <= 0 or not label:
+        return None
+    return AnkiUndoMarker(last_step, label)
+
+
+def _undo_marked_anki_operation(mw: Any, marker: AnkiUndoMarker) -> None:
+    col = getattr(mw, "col", None)
+    undo_status = getattr(col, "undo_status", None)
+    undo = getattr(col, "undo", None)
+    if not callable(undo_status) or not callable(undo):
+        raise RuntimeError("Anki's checked undo API is unavailable.")
+    status = undo_status()
+    current_step = int(getattr(status, "last_step", 0) or 0)
+    current_label = str(getattr(status, "undo", "") or "")
+    if current_step != marker.last_step or current_label != marker.label:
+        raise RuntimeError(
+            "Cannot undo this contextual review because another Anki action happened afterward."
+        )
+    undo()
+    reset = getattr(mw, "reset", None)
+    if callable(reset):
+        reset()
 
 
 def _is_dark_mode(mw: Any) -> bool:

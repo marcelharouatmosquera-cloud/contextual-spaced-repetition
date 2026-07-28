@@ -10,6 +10,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set
 
 from .language_profiles import language_match_codes
 from .normalizer import (
+    contains_unsegmented_script,
     count_words,
     is_unsegmented_language,
     matching_key_for_word,
@@ -42,6 +43,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_word_forms_form_base ON word_forms(form, b
 CREATE INDEX IF NOT EXISTS idx_word_forms_form ON word_forms(form);
 CREATE INDEX IF NOT EXISTS idx_word_forms_base ON word_forms(base);
 
+CREATE TABLE IF NOT EXISTS sentence_ngrams (
+  ngram TEXT NOT NULL,
+  sentence_id INTEGER NOT NULL,
+  PRIMARY KEY(ngram, sentence_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_sentence_ngrams_sentence ON sentence_ngrams(sentence_id);
+
 CREATE TABLE IF NOT EXISTS corpus_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -50,6 +58,7 @@ CREATE TABLE IF NOT EXISTS corpus_meta (
 
 WORD_FORMS_BACKFILL_KEY = "word_forms_backfill_v1"
 SENTENCE_FORMS_BACKFILL_KEY = "sentence_forms_backfill_v1"
+SENTENCE_NGRAMS_BACKFILL_KEY = "sentence_ngrams_backfill_v1"
 REVIEW_QUERY_TIMEOUT_SECONDS = 15.0
 
 
@@ -152,6 +161,10 @@ def delete_sentences_for_language(path: Path, language: str, limit: int = 0) -> 
                 "DELETE FROM sentence_forms WHERE sentence_id IN (%s)" % marks,
                 tuple(batch),
             )
+            conn.execute(
+                "DELETE FROM sentence_ngrams WHERE sentence_id IN (%s)" % marks,
+                tuple(batch),
+            )
             conn.execute("DELETE FROM sentences WHERE id IN (%s)" % marks, tuple(batch))
         conn.commit()
         return len(sentence_ids)
@@ -174,6 +187,7 @@ def ensure_database_schema(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE sentences ADD COLUMN %s %s" % (name, definition))
     _backfill_word_forms_from_word_map(conn)
     _backfill_sentence_forms(conn)
+    _backfill_sentence_ngrams(conn)
 
 
 def insert_sentence(
@@ -185,6 +199,7 @@ def insert_sentence(
     source: str = "",
     word_count: int = 0,
     quality_flags: str = "",
+    return_existing: bool = True,
 ) -> int:
     cur = conn.execute(
         """
@@ -201,6 +216,8 @@ def insert_sentence(
         ),
     )
     if cur.rowcount == 0:
+        if not return_existing:
+            return 0
         row = conn.execute(
             "SELECT id FROM sentences WHERE language = ? AND full_text = ?",
             (language, full_text),
@@ -213,6 +230,7 @@ def insert_sentence(
         "INSERT INTO sentence_forms(sentence_id, word_form_list) VALUES (?, ?)",
         (sentence_id, " ".join(forms)),
     )
+    _insert_sentence_ngrams(conn, sentence_id, full_text)
     if word_map:
         upsert_word_forms(conn, word_map)
     return sentence_id
@@ -298,6 +316,14 @@ def select_review_task(
             matched = _matched_base_keys(sentence_keys, expansions)
         if not matched:
             continue
+        if (
+            _matched_cards_include_recall(matched, due_by_key)
+            and not str(row["translation"] or "").strip()
+        ):
+            # A recall blank needs sentence-level native-language context on
+            # the question side. Recognition-only prompts remain usable with
+            # corpora that do not contain translations.
+            continue
 
         score = _score_match(matched, due_by_key)
         candidates.append(
@@ -309,6 +335,7 @@ def select_review_task(
                 matched_lemmas=matched,
                 score=score,
                 matched_card_count=_matched_card_count(matched, due_by_key),
+                matched_learning_card_count=_matched_learning_card_count(matched, due_by_key),
                 bm25_score=float(row["bm25_score"] or 0.0),
                 word_count=word_count,
             )
@@ -323,21 +350,42 @@ def select_review_task(
     card_ids_by_key: Dict[str, List[int]] = {}
     for lemma in best.matched_lemmas:
         card_ids_by_key[lemma] = sorted({card.card_id for card in due_by_key[lemma]})
-    target_words = _target_words_for_match(best.matched_lemmas, due_by_key)
+    due_cards_by_id = _due_cards_by_id(best.matched_lemmas, due_by_key)
+    tokens = _tokens_for_sentence(
+        best.full_text,
+        language,
+        set(card_ids_by_key),
+        matching_mode,
+        card_ids_by_key,
+        expansions,
+        due_cards_by_id,
+    )
+    token_card_ids = {
+        int(card_id)
+        for token in tokens
+        if token.is_target
+        for card_id in token.card_ids
+    }
+    if token_card_ids:
+        card_ids_by_key = {
+            key: [card_id for card_id in card_ids if card_id in token_card_ids]
+            for key, card_ids in card_ids_by_key.items()
+        }
+        card_ids_by_key = {
+            key: card_ids for key, card_ids in card_ids_by_key.items() if card_ids
+        }
+    selected_due_by_key = {
+        key: [card for card in due_by_key[key] if card.card_id in set(card_ids)]
+        for key, card_ids in card_ids_by_key.items()
+    }
+    target_words = _target_words_for_match(tuple(card_ids_by_key), selected_due_by_key)
 
     return ReviewTask(
         sentence_id=best.sentence_id,
         language=best.language,
         full_text=best.full_text,
         translation=best.translation,
-        tokens=_tokens_for_sentence(
-            best.full_text,
-            language,
-            set(card_ids_by_key),
-            matching_mode,
-            card_ids_by_key,
-            expansions,
-        ),
+        tokens=tokens,
         card_ids_by_key=card_ids_by_key,
         target_words=target_words,
         matching_mode=matching_mode,
@@ -372,6 +420,39 @@ def _matched_card_count(matched_lemmas: Sequence[str], due_by_lemma: Dict[str, L
     return len(card_ids)
 
 
+def _matched_learning_card_count(
+    matched_lemmas: Sequence[str], due_by_lemma: Dict[str, List[DueCard]]
+) -> int:
+    card_ids: Set[int] = set()
+    for lemma in matched_lemmas:
+        card_ids.update(
+            card.card_id
+            for card in due_by_lemma.get(lemma, [])
+            if card.is_learning_due
+        )
+    return len(card_ids)
+
+
+def _matched_cards_include_recall(
+    matched_keys: Sequence[str], due_by_key: Dict[str, List[DueCard]]
+) -> bool:
+    return any(
+        _due_card_direction(card) == "recall"
+        for key in matched_keys
+        for card in due_by_key.get(key, ())
+    )
+
+
+def _due_cards_by_id(
+    matched_keys: Sequence[str], due_by_key: Dict[str, List[DueCard]]
+) -> Dict[int, DueCard]:
+    cards: Dict[int, DueCard] = {}
+    for key in matched_keys:
+        for card in due_by_key.get(key, ()):
+            cards.setdefault(int(card.card_id), card)
+    return cards
+
+
 def _target_words_for_match(
     matched_keys: Sequence[str], due_by_key: Dict[str, List[DueCard]]
 ) -> Tuple[TargetWordDefinition, ...]:
@@ -401,6 +482,7 @@ def _target_words_for_match(
             solution_fields=card.solution_fields,
             good_interval=_good_interval_label(card),
             again_interval="today",
+            direction=_due_card_direction(card),
         )
         for card in ordered
     )
@@ -423,8 +505,9 @@ def _days_label(days: int) -> str:
     return "%s days" % days
 
 
-def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, float, int, float, int, int]:
+def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, int, float, int, float, int, int]:
     return (
+        -candidate.matched_learning_card_count,
         -candidate.matched_card_count,
         -candidate.score,
         0 if str(candidate.translation or "").strip() else 1,
@@ -500,6 +583,120 @@ def _substring_candidate_rows(
     if not forms:
         return []
 
+    if _table_exists(conn, "sentence_ngrams"):
+        indexed_forms = [form for form in forms if len(form) >= 2]
+        short_forms = [form for form in forms if len(form) < 2]
+        rows = _indexed_substring_candidate_rows(
+            conn,
+            indexed_forms,
+            languages,
+            limit,
+        )
+        if short_forms and len(rows) < limit:
+            seen_ids = {int(row["id"]) for row in rows}
+            for row in _scan_substring_candidate_rows(
+                conn,
+                short_forms,
+                languages,
+                limit,
+            ):
+                sentence_id = int(row["id"])
+                if sentence_id in seen_ids:
+                    continue
+                seen_ids.add(sentence_id)
+                rows.append(row)
+        return rows[:limit]
+
+    return _scan_substring_candidate_rows(conn, forms, languages, limit)
+
+
+def _indexed_substring_candidate_rows(
+    conn: sqlite3.Connection,
+    forms: Sequence[str],
+    languages: Sequence[str],
+    limit: int,
+) -> List[sqlite3.Row]:
+    if not forms:
+        return []
+    probes = _least_common_probe_ngrams(conn, forms)
+    if not probes:
+        return []
+    probe_placeholders = ", ".join("?" for _ in probes)
+    language_placeholders = ", ".join("?" for _ in range(max(1, len(languages))))
+    predicates = " OR ".join("instr(lower(s.full_text), ?) > 0" for _ in forms)
+    match_score = " + ".join(
+        "CASE WHEN instr(lower(s.full_text), ?) > 0 THEN 1 ELSE 0 END" for _ in forms
+    )
+    sql = """
+        SELECT s.id, s.language, s.full_text, s.translation, s.word_count,
+               COALESCE(sf.word_form_list, '') AS key_list,
+               -(%s) AS bm25_score,
+               (%s) AS substring_match_count
+        FROM (
+            SELECT DISTINCT sentence_id
+            FROM sentence_ngrams
+            WHERE ngram IN (%s)
+        ) candidates
+        JOIN sentences s ON s.id = candidates.sentence_id
+        LEFT JOIN sentence_forms sf ON sf.sentence_id = s.id
+        WHERE s.language IN (%s)
+          AND (%s)
+        ORDER BY substring_match_count DESC, s.word_count, s.id
+        LIMIT ?
+    """ % (match_score, match_score, probe_placeholders, language_placeholders, predicates)
+    return conn.execute(
+        sql,
+        (*forms, *forms, *probes, *languages, *forms, max(limit, 20)),
+    ).fetchall()
+
+
+def _least_common_probe_ngrams(
+    conn: sqlite3.Connection, forms: Sequence[str]
+) -> List[str]:
+    grams_by_form = {form: _form_probe_ngrams(form) for form in forms}
+    all_grams = sorted({gram for grams in grams_by_form.values() for gram in grams})
+    if not all_grams:
+        return []
+    counts: Dict[str, int] = {}
+    for offset in range(0, len(all_grams), 400):
+        chunk = all_grams[offset : offset + 400]
+        placeholders = ", ".join("?" for _ in chunk)
+        counts.update(
+            {
+                str(row[0]): int(row[1])
+                for row in conn.execute(
+                    "SELECT ngram, COUNT(*) FROM sentence_ngrams "
+                    "WHERE ngram IN (%s) GROUP BY ngram" % placeholders,
+                    chunk,
+                )
+            }
+        )
+    return sorted(
+        {
+            min(grams, key=lambda gram: (counts.get(gram, 0), gram))
+            for grams in grams_by_form.values()
+            if grams
+        }
+    )
+
+
+def _form_probe_ngrams(form: str) -> Tuple[str, ...]:
+    width = 3 if len(form) >= 3 else 2
+    return tuple(
+        dict.fromkeys(
+            form[index : index + width]
+            for index in range(len(form) - width + 1)
+        )
+    )
+
+
+def _scan_substring_candidate_rows(
+    conn: sqlite3.Connection,
+    forms: Sequence[str],
+    languages: Sequence[str],
+    limit: int,
+) -> List[sqlite3.Row]:
+
     rows: List[sqlite3.Row] = []
     seen: Set[int] = set()
     language_placeholders = ", ".join("?" for _ in range(max(1, len(languages))))
@@ -566,7 +763,7 @@ def _due_by_key(
             key = card.match_key or card.word_form or normalize_form(card.target_word)
             if key:
                 due_by_lemma.setdefault(key, []).append(card)
-        return due_by_lemma
+        return _prefer_recognition_for_mixed_keys(due_by_lemma)
 
     candidates_by_card: List[Tuple[DueCard, Tuple[str, ...]]] = []
     candidate_keys: Set[str] = set()
@@ -589,7 +786,27 @@ def _due_by_key(
         key = key or card.match_key or card.lemma
         if key:
             due_by_lemma.setdefault(key, []).append(card)
-    return due_by_lemma
+    return _prefer_recognition_for_mixed_keys(due_by_lemma)
+
+
+def _prefer_recognition_for_mixed_keys(
+    due_by_key: Dict[str, List[DueCard]]
+) -> Dict[str, List[DueCard]]:
+    """Never test recall and recognition through the same matched word key."""
+    resolved: Dict[str, List[DueCard]] = {}
+    for key, cards in due_by_key.items():
+        directions = {_due_card_direction(card) for card in cards}
+        if directions == {"recognition", "recall"}:
+            resolved[key] = [
+                card for card in cards if _due_card_direction(card) == "recognition"
+            ]
+        else:
+            resolved[key] = list(cards)
+    return resolved
+
+
+def _due_card_direction(card: DueCard) -> str:
+    return "recall" if str(card.direction or "").strip().casefold() == "recall" else "recognition"
 
 
 def _resolve_word_form_bases(
@@ -711,12 +928,14 @@ def _tokens_for_sentence(
     matching_mode: str,
     card_ids_by_key: Dict[str, List[int]],
     expansions: Sequence[QueryExpansion],
+    due_cards_by_id: Dict[int, DueCard],
 ) -> List[Token]:
     if is_unsegmented_language(language):
         return _tokens_for_unsegmented_sentence(
             full_text,
             card_ids_by_key,
             expansions,
+            due_cards_by_id,
         )
     tokens: List[Token] = []
     for token in split_text_tokens(full_text, language):
@@ -728,7 +947,7 @@ def _tokens_for_sentence(
                 language,
                 matching_mode,
             )
-            card_ids = tuple(
+            candidate_card_ids = tuple(
                 sorted(
                     {
                         int(card_id)
@@ -737,10 +956,16 @@ def _tokens_for_sentence(
                     }
                 )
             )
+            card_ids, direction, hint = _token_target_metadata(
+                candidate_card_ids,
+                due_cards_by_id,
+            )
             is_target = bool(card_ids) or (match_key in target_lemmas if match_key else False)
         else:
             match_key = ""
             card_ids = ()
+            direction = "recognition"
+            hint = ""
             is_target = False
         tokens.append(
             Token(
@@ -751,6 +976,8 @@ def _tokens_for_sentence(
                 match_key=match_key,
                 lookup_text=normalize_form(token.text) if token.is_word else "",
                 card_ids=card_ids,
+                direction=direction,
+                hint=hint,
             )
         )
     return tokens
@@ -760,6 +987,7 @@ def _tokens_for_unsegmented_sentence(
     full_text: str,
     card_ids_by_key: Dict[str, List[int]],
     expansions: Sequence[QueryExpansion],
+    due_cards_by_id: Dict[int, DueCard],
 ) -> List[Token]:
     occurrences: List[Tuple[int, int, str, str]] = []
     for expansion in expansions:
@@ -789,7 +1017,13 @@ def _tokens_for_unsegmented_sentence(
     for start, end, base_key, form in selected:
         if start > cursor:
             tokens.append(Token(text=full_text[cursor:start], lemma="", is_word=False))
-        card_ids = tuple(sorted({int(card_id) for card_id in card_ids_by_key.get(base_key, [])}))
+        candidate_card_ids = tuple(
+            sorted({int(card_id) for card_id in card_ids_by_key.get(base_key, [])})
+        )
+        card_ids, direction, hint = _token_target_metadata(
+            candidate_card_ids,
+            due_cards_by_id,
+        )
         tokens.append(
             Token(
                 text=full_text[start:end],
@@ -799,6 +1033,8 @@ def _tokens_for_unsegmented_sentence(
                 match_key=base_key,
                 lookup_text=form,
                 card_ids=card_ids,
+                direction=direction,
+                hint=hint,
             )
         )
         cursor = end
@@ -807,6 +1043,28 @@ def _tokens_for_unsegmented_sentence(
     if not tokens:
         return [Token(text=full_text, lemma="", is_word=False)]
     return tokens
+
+
+def _token_target_metadata(
+    card_ids: Sequence[int], due_cards_by_id: Dict[int, DueCard]
+) -> Tuple[Tuple[int, ...], str, str]:
+    cards = [due_cards_by_id[card_id] for card_id in card_ids if card_id in due_cards_by_id]
+    directions = {_due_card_direction(card) for card in cards}
+    if directions == {"recognition", "recall"}:
+        # One DOM token cannot be both shown and blanked. Recognition wins and
+        # the recall IDs are left due for the next freshly collected task.
+        cards = [card for card in cards if _due_card_direction(card) == "recognition"]
+        directions = {"recognition"}
+    selected_card_ids = tuple(sorted({int(card.card_id) for card in cards}))
+    direction = "recall" if directions == {"recall"} else "recognition"
+    hints = tuple(
+        dict.fromkeys(
+            str(card.definition or "").strip()
+            for card in cards
+            if direction == "recall" and str(card.definition or "").strip()
+        )
+    )
+    return selected_card_ids, direction, " / ".join(hints)
 
 
 def _backfill_word_forms_from_word_map(conn: sqlite3.Connection) -> None:
@@ -866,6 +1124,41 @@ def _backfill_sentence_forms(conn: sqlite3.Connection) -> None:
         _mark_corpus_migration_completed(conn, SENTENCE_FORMS_BACKFILL_KEY)
     except sqlite3.Error:
         return
+
+
+def _backfill_sentence_ngrams(conn: sqlite3.Connection) -> None:
+    if _corpus_migration_completed(conn, SENTENCE_NGRAMS_BACKFILL_KEY):
+        return
+    try:
+        cursor = conn.execute("SELECT id, full_text FROM sentences ORDER BY id")
+        while True:
+            rows = cursor.fetchmany(500)
+            if not rows:
+                break
+            for row in rows:
+                _insert_sentence_ngrams(conn, int(row["id"]), str(row["full_text"]))
+        _mark_corpus_migration_completed(conn, SENTENCE_NGRAMS_BACKFILL_KEY)
+    except sqlite3.Error:
+        return
+
+
+def _insert_sentence_ngrams(
+    conn: sqlite3.Connection, sentence_id: int, full_text: str
+) -> None:
+    if not contains_unsegmented_script(full_text):
+        return
+    normalized = normalize_form(full_text)
+    ngrams = {
+        normalized[index : index + width]
+        for width in (2, 3)
+        for index in range(max(0, len(normalized) - width + 1))
+    }
+    if not ngrams:
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO sentence_ngrams(ngram, sentence_id) VALUES (?, ?)",
+        ((ngram, int(sentence_id)) for ngram in sorted(ngrams)),
+    )
 
 
 def _corpus_migration_completed(conn: sqlite3.Connection, key: str) -> bool:

@@ -94,12 +94,6 @@ def _import_sentence_rows(
             if not word_map:
                 skipped += 1
                 continue
-            if conn.execute(
-                "SELECT 1 FROM sentences WHERE language = ? AND full_text = ? LIMIT 1",
-                (language, text),
-            ).fetchone():
-                skipped += 1
-                continue
             inserted_id = insert_sentence(
                 conn,
                 language,
@@ -109,6 +103,7 @@ def _import_sentence_rows(
                 source=source,
                 word_count=words,
                 quality_flags=",".join(flags),
+                return_existing=False,
             )
             if inserted_id == 0:
                 skipped += 1
@@ -181,19 +176,18 @@ def import_word_forms_file(
             if not form or not base:
                 skipped += 1
                 continue
-            existing = conn.execute(
-                "SELECT 1 FROM word_forms WHERE form = ? AND base = ? LIMIT 1",
-                (form, base),
-            ).fetchone()
             pair = (form, base)
-            if existing or pair in batch_seen:
+            if pair in batch_seen:
                 skipped += 1
                 continue
             batch.append(pair)
             batch_seen.add(pair)
-            inserted += 1
-            if len(batch) >= 1000:
+            if len(batch) >= IMPORT_BATCH_SIZE:
+                changes_before = conn.total_changes
                 upsert_word_forms(conn, batch)
+                batch_inserted = conn.total_changes - changes_before
+                inserted += batch_inserted
+                skipped += len(batch) - batch_inserted
                 batch.clear()
                 batch_seen.clear()
                 # A replacement must be all-or-nothing. For append imports,
@@ -203,7 +197,11 @@ def import_word_forms_file(
                 if progress:
                     progress("Scanned %s rows; imported %s word forms" % (index, inserted), inserted)
         if batch:
+            changes_before = conn.total_changes
             upsert_word_forms(conn, batch)
+            batch_inserted = conn.total_changes - changes_before
+            inserted += batch_inserted
+            skipped += len(batch) - batch_inserted
         conn.commit()
     except Exception:
         conn.rollback()

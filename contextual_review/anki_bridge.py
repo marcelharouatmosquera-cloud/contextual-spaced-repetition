@@ -17,6 +17,7 @@ from .normalizer import (
     normalize_word,
     select_target_tokens,
 )
+from .template_fields import visible_question_field_names
 from .types import DueCard, ReviewTask, SolutionFieldValue
 
 Answerer = Callable[[Any, int], None]
@@ -44,6 +45,7 @@ class AnswerSummary:
     unknown_card_ids: List[int]
     known_card_ids: List[int]
     undo_snapshot: Optional["BatchUndoSnapshot"] = None
+    completed_card_ids: Optional[List[int]] = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,10 @@ class CardAnswerError(RuntimeError):
     def __init__(self, message: str, answered_card_ids: Optional[List[int]] = None) -> None:
         super().__init__(message)
         self.answered_card_ids = answered_card_ids or []
+
+
+class GradeNowUnavailable(RuntimeError):
+    """Raised when this Anki version lacks the arbitrary-card grading API."""
 
 
 def build_due_search_query(mw: Any, config: ContextConfig) -> str:
@@ -73,7 +79,7 @@ def build_due_search_query(mw: Any, config: ContextConfig) -> str:
     if not config.include_new_cards and "-is:new" not in query:
         query = "(%s) -is:new" % query
 
-    return _scope_query(mw, config, query)
+    return _scope_query(mw, config, "(%s) -is:buried" % query)
 
 
 def build_future_search_query(mw: Any, config: ContextConfig) -> str:
@@ -85,7 +91,7 @@ def build_future_search_query(mw: Any, config: ContextConfig) -> str:
         query = "(%s) -is:new" % query
     if not config.include_learning_cards:
         query = "(%s) -is:learn" % query
-    return _scope_query(mw, config, query)
+    return _scope_query(mw, config, "(%s) -is:buried" % query)
 
 
 def _custom_filter_without_due(query: str) -> str:
@@ -175,6 +181,7 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
 
     note_type_filter = set(config.note_types)
     today = int(getattr(getattr(mw.col, "sched", None), "today", 0) or 0)
+    now = int(time.time())
     due_cards: List[DueCard] = []
     skipped: Dict[str, int] = {}
     accepted_new_card_ids: Set[int] = set()
@@ -193,6 +200,12 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         if not _card_allowed(card, config):
             _increment_skip(skipped, "card_state")
             continue
+        if _intraday_learning_step_is_early(card, now):
+            # Anki's is:due search may include queue-1 cards inside the
+            # learn-ahead window. Contextual Review promises the displayed
+            # learning delay, so do not admit them before their exact timestamp.
+            _increment_skip(skipped, "learning_delay")
+            continue
         if not _card_in_review_window(card, today, config.future_due_days):
             _increment_skip(skipped, "future_window")
             continue
@@ -201,7 +214,8 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         if note_type_filter and note_type not in note_type_filter:
             _increment_skip(skipped, "note_type")
             continue
-        if not _card_template_allowed(card, note, config.included_card_templates):
+        direction, template_allowed = _card_review_direction(card, note, config)
+        if not template_allowed:
             _increment_skip(skipped, "card_template")
             continue
 
@@ -210,14 +224,27 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
             _increment_skip(skipped, "target_field")
             continue
         solution_fields = _solution_field_values(mw, note, config)
-        plain_definition = _first_text_solution(solution_fields)
+        excluded_hint_field = config.target_field if direction == "recall" else ""
+        plain_definition = _first_text_solution(
+            solution_fields,
+            excluded_field=excluded_hint_field,
+        )
         if not plain_definition:
             definition_value = _definition_value(note, config)
             plain_definition = html.unescape(_strip_html(definition_value)) if definition_value else ""
-        if config.require_target_on_question and not _card_question_contains_field(
-            card,
-            note,
-            config.target_field,
+        if direction == "recall" and not plain_definition.strip():
+            # Never fall back to the target field itself: that would put the
+            # answer inside the recall hint box.
+            _increment_skip(skipped, "recall_hint")
+            continue
+        if (
+            direction != "recall"
+            and config.require_target_on_question
+            and not _card_question_contains_field(
+                card,
+                note,
+                config.target_field,
+            )
         ):
             _increment_skip(skipped, "target_not_on_question")
             continue
@@ -232,7 +259,13 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         interval = _int_attr(card, "ivl", 0)
         factor = _int_attr(card, "factor", 2500)
         overdue, due_in_days, priority = _due_metrics(card, today)
+        is_learning_due = card_id in today_search_card_ids and _card_is_learning(card)
+        if is_learning_due:
+            # A due intraday step should win the next sentence selection instead
+            # of waiting behind a cache-sized batch of overdue review cards.
+            priority += 1000.0
         target_display = _target_display_text(plain_value)
+        note_id = _int_attr(card, "nid", 0) or _int_attr(note, "id", 0)
         for token in select_target_tokens(
             plain_value,
             config.language,
@@ -259,10 +292,27 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
                     overdue=overdue,
                     due_in_days=due_in_days,
                     priority=priority,
+                    is_learning_due=is_learning_due,
+                    direction=direction,
+                    note_id=note_id,
                 )
             )
 
-    sorted_due_cards = sorted(due_cards, key=_due_card_sort_key)
+    unfiltered_due_cards = sorted(due_cards, key=_due_card_sort_key)
+    direction_filtered_due_cards = _defer_recall_siblings(unfiltered_due_cards)
+    deferred_recall_card_ids = sorted(
+        {card.card_id for card in unfiltered_due_cards}
+        - {card.card_id for card in direction_filtered_due_cards}
+    )
+    if deferred_recall_card_ids:
+        skipped["recall_after_recognition"] = len(deferred_recall_card_ids)
+    sorted_due_cards = _filter_sibling_due_cards(mw, direction_filtered_due_cards, today)
+    suppressed_sibling_card_ids = sorted(
+        {card.card_id for card in direction_filtered_due_cards}
+        - {card.card_id for card in sorted_due_cards}
+    )
+    if suppressed_sibling_card_ids:
+        skipped["sibling_bury"] = len(suppressed_sibling_card_ids)
     limited_due_cards = _limit_due_card_targets(sorted_due_cards, config.max_due_cards)
     append_debug_log(
         "collect_due_cards",
@@ -274,6 +324,8 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         collected_target_count=len(sorted_due_cards),
         returned_target_count=len(limited_due_cards),
         returned_card_ids=sorted({card.card_id for card in limited_due_cards}),
+        deferred_recall_card_ids=deferred_recall_card_ids,
+        suppressed_sibling_card_ids=suppressed_sibling_card_ids,
         skipped=skipped,
         today=today,
         future_due_days=config.future_due_days,
@@ -284,6 +336,88 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         if card.card_id in today_search_card_ids
     }
     return DueCardCollection(limited_due_cards, eligible_today_card_ids)
+
+
+def _defer_recall_siblings(due_cards: Sequence[DueCard]) -> List[DueCard]:
+    """Keep recognition ahead of a due recall sibling from the same note."""
+    directions_by_note: Dict[int, Set[str]] = {}
+    for card in due_cards:
+        note_id = int(card.note_id or 0)
+        if not note_id:
+            continue
+        directions_by_note.setdefault(note_id, set()).add(_normalized_direction(card.direction))
+    mixed_note_ids = {
+        note_id
+        for note_id, directions in directions_by_note.items()
+        if directions == {"recognition", "recall"}
+    }
+    if not mixed_note_ids:
+        return list(due_cards)
+    return [
+        card
+        for card in due_cards
+        if not (
+            int(card.note_id or 0) in mixed_note_ids
+            and _normalized_direction(card.direction) == "recall"
+        )
+    ]
+
+
+def _filter_sibling_due_cards(
+    mw: Any, due_cards: Sequence[DueCard], today: int
+) -> List[DueCard]:
+    """Mirror Anki's queue-time sibling suppression for the contextual queue."""
+    col = getattr(mw, "col", None)
+    if col is None:
+        return list(due_cards)
+
+    modes_by_note: Dict[int, Tuple[bool, bool, bool]] = {}
+    allowed_card_ids: Set[int] = set()
+    processed_card_ids: Set[int] = set()
+    for due_card in due_cards:
+        card_id = int(due_card.card_id)
+        if card_id in processed_card_ids:
+            continue
+        processed_card_ids.add(card_id)
+        try:
+            card = col.get_card(card_id)
+        except Exception:
+            allowed_card_ids.add(card_id)
+            continue
+        note_id = _int_attr(card, "nid", 0)
+        if not note_id:
+            allowed_card_ids.add(card_id)
+            continue
+
+        previous_mode = modes_by_note.get(note_id)
+        new_mode = _sibling_bury_mode_for_card(col, card)
+        if previous_mode is None:
+            allowed_card_ids.add(card_id)
+            modes_by_note[note_id] = new_mode
+            continue
+
+        if not _sibling_card_is_suppressed(card, previous_mode, today):
+            allowed_card_ids.add(card_id)
+        modes_by_note[note_id] = tuple(
+            previous or new for previous, new in zip(previous_mode, new_mode)
+        )
+
+    return [card for card in due_cards if int(card.card_id) in allowed_card_ids]
+
+
+def _sibling_card_is_suppressed(
+    card: Any, mode: Tuple[bool, bool, bool], today: int
+) -> bool:
+    bury_new, bury_reviews, bury_interday = mode
+    queue = _card_queue(card)
+    if queue == 0:
+        return bury_new
+    if queue == 2 and _int_attr(card, "due", today) <= today:
+        return bury_reviews
+    if queue == 3 and _int_attr(card, "due", today) <= today:
+        return bury_interday
+    # Anki does not sibling-bury intraday queue-1 learning cards.
+    return False
 
 
 def _limit_due_card_targets(due_cards: Sequence[DueCard], max_cards: int) -> List[DueCard]:
@@ -333,7 +467,7 @@ def answer_review_task(
             unknown_card_ids=unknown_card_id_list,
             card_ids_by_key=task.card_ids_by_key,
         )
-        return AnswerSummary([], [], [])
+        return AnswerSummary([], [], [], completed_card_ids=[])
 
     answer_card_ids = [answer.card_id for answer in answers]
     append_debug_log(
@@ -345,62 +479,175 @@ def answer_review_task(
         before=_debug_card_states(mw, answer_card_ids),
     )
 
-    native_error: Optional[Exception] = None
     try:
-        summary = _answer_with_anki_scheduler(mw, answers)
+        summary = _answer_with_anki_grade_now(mw, answers)
+        summary = _with_completed_card_ids(mw, summary)
         append_debug_log(
             "answer_review_task_success",
-            scheduler="native",
+            scheduler="anki_grade_now",
             sentence_id=task.sentence_id,
             summary=_debug_answer_summary(summary),
             after=_debug_card_states(mw, answer_card_ids),
         )
         return summary
-    except CardAnswerError as exc:
-        if exc.answered_card_ids:
-            append_debug_log(
-                "answer_review_task_error",
-                scheduler="native",
-                sentence_id=task.sentence_id,
-                error=str(exc),
-                answered_card_ids=exc.answered_card_ids,
-                after=_debug_card_states(mw, answer_card_ids),
-            )
-            raise
-        native_error = exc
-    except Exception as exc:
-        native_error = exc
-
-    manual_summary = _answer_with_contextual_scheduler(mw, answers)
-    if manual_summary is not None:
+    except GradeNowUnavailable:
+        # Kept for older Anki versions and lightweight test doubles. Unlike the
+        # removed contextual fallback, this still delegates every transition to
+        # Anki's scheduler.
+        summary = _answer_with_anki_scheduler(mw, answers)
+        summary = _with_completed_card_ids(mw, summary)
         append_debug_log(
             "answer_review_task_success",
-            scheduler="contextual_fallback",
+            scheduler="native_legacy",
             sentence_id=task.sentence_id,
-            native_error=str(native_error) if native_error is not None else "",
-            summary=_debug_answer_summary(manual_summary),
+            summary=_debug_answer_summary(summary),
             after=_debug_card_states(mw, answer_card_ids),
         )
-        return manual_summary
-
-    if native_error is not None:
+        return summary
+    except Exception as exc:
         append_debug_log(
             "answer_review_task_error",
-            scheduler="unavailable",
+            scheduler="anki_grade_now",
             sentence_id=task.sentence_id,
-            error=str(native_error),
+            error=str(exc),
             after=_debug_card_states(mw, answer_card_ids),
         )
-        raise native_error
+        raise
 
-    append_debug_log(
-        "answer_review_task_error",
-        scheduler="unavailable",
-        sentence_id=task.sentence_id,
-        error="No compatible Anki scheduler was available.",
-        after=_debug_card_states(mw, answer_card_ids),
+
+def _answer_with_anki_grade_now(mw: Any, answers: Sequence[CardAnswer]) -> AnswerSummary:
+    """Grade arbitrary cards with Anki's real scheduler as one undo action."""
+    col = getattr(mw, "col", None)
+    backend = getattr(col, "_backend", None)
+    grade_now = getattr(backend, "grade_now", None)
+    add_undo = getattr(col, "add_custom_undo_entry", None)
+    merge_undo = getattr(col, "merge_undo_entries", None)
+    undo = getattr(col, "undo", None)
+    if not all(callable(item) for item in (grade_now, add_undo, merge_undo, undo)):
+        raise GradeNowUnavailable("Anki's Grade Now API is unavailable.")
+
+    cards = _load_cards_for_answers(mw, answers)
+    sibling_card_ids = _sibling_card_ids_to_bury(mw, answers, cards)
+    undo_entry = add_undo("Contextual Review")
+    try:
+        answers_by_rating: Dict[int, List[int]] = {}
+        for answer in answers:
+            rating = _grade_now_rating_for_ease(answer.ease)
+            answers_by_rating.setdefault(rating, []).append(int(answer.card_id))
+        for rating, card_ids in sorted(answers_by_rating.items()):
+            grade_now(card_ids=card_ids, rating=rating)
+            merge_undo(undo_entry)
+        if sibling_card_ids:
+            bury_cards = getattr(getattr(col, "sched", None), "bury_cards", None)
+            if not callable(bury_cards):
+                raise RuntimeError("Anki's scheduler sibling-bury API is unavailable.")
+            bury_cards(sibling_card_ids, manual=False)
+            merge_undo(undo_entry)
+    except Exception as exc:
+        try:
+            # If grading failed, this removes either the failed operation's
+            # custom entry or the already-merged part of the sentence.
+            undo()
+        except Exception as undo_exc:
+            raise RuntimeError(
+                "Anki could not grade the contextual cards, and rollback also failed: %s"
+                % undo_exc
+            ) from exc
+        _flush_collection(mw)
+        raise RuntimeError("Anki could not grade the contextual cards: %s" % exc) from exc
+
+    _flush_collection(mw)
+    if sibling_card_ids:
+        append_debug_log(
+            "answer_review_task_siblings_buried",
+            answered_card_ids=[answer.card_id for answer in answers],
+            buried_sibling_card_ids=sibling_card_ids,
+        )
+    return AnswerSummary(
+        answered_card_ids=[answer.card_id for answer in answers],
+        unknown_card_ids=[answer.card_id for answer in answers if answer.is_unknown],
+        known_card_ids=[answer.card_id for answer in answers if not answer.is_unknown],
     )
-    raise RuntimeError("No compatible Anki scheduler was available.")
+
+
+def _grade_now_rating_for_ease(ease: Any) -> int:
+    """Translate Anki's reviewer ease 1..4 to Grade Now's rating 0..3."""
+    try:
+        parsed = int(ease)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid Anki answer ease: %s" % ease) from exc
+    if parsed not in (1, 2, 3, 4):
+        raise RuntimeError("Invalid Anki answer ease: %s" % ease)
+    return parsed - 1
+
+
+def _sibling_card_ids_to_bury(
+    mw: Any,
+    answers: Sequence[CardAnswer],
+    cards: Dict[int, Any],
+) -> List[int]:
+    """Return due sibling cards covered by each answered card's deck options."""
+    col = getattr(mw, "col", None)
+    if col is None:
+        return []
+    answered_card_ids = {int(answer.card_id) for answer in answers}
+    modes_by_note: Dict[int, Tuple[bool, bool, bool]] = {}
+    for answer in answers:
+        card = cards.get(int(answer.card_id))
+        note_id = _int_attr(card, "nid", 0)
+        if not note_id:
+            continue
+        bury_new, bury_reviews, bury_interday = _sibling_bury_mode_for_card(col, card)
+        previous = modes_by_note.get(note_id, (False, False, False))
+        modes_by_note[note_id] = (
+            previous[0] or bury_new,
+            previous[1] or bury_reviews,
+            previous[2] or bury_interday,
+        )
+
+    today = int(getattr(getattr(col, "sched", None), "today", 0) or 0)
+    sibling_card_ids: Set[int] = set()
+    card_ids_of_note = getattr(col, "card_ids_of_note", None)
+    for note_id, (bury_new, bury_reviews, bury_interday) in modes_by_note.items():
+        try:
+            note_card_ids = list(card_ids_of_note(note_id)) if callable(card_ids_of_note) else []
+        except Exception:
+            note_card_ids = []
+        for sibling_id in _unique_ids(note_card_ids):
+            if sibling_id in answered_card_ids:
+                continue
+            try:
+                sibling = col.get_card(sibling_id)
+            except Exception:
+                continue
+            if _int_attr(sibling, "odid", 0) or _card_queue(sibling) < 0:
+                continue
+            queue = _card_queue(sibling)
+            if queue == 0 and bury_new:
+                sibling_card_ids.add(sibling_id)
+            elif queue == 2 and bury_reviews and _int_attr(sibling, "due", today) <= today:
+                sibling_card_ids.add(sibling_id)
+            elif queue == 3 and bury_interday and _int_attr(sibling, "due", today) <= today:
+                sibling_card_ids.add(sibling_id)
+    return sorted(sibling_card_ids)
+
+
+def _sibling_bury_mode_for_card(col: Any, card: Any) -> Tuple[bool, bool, bool]:
+    try:
+        current_deck_id = getattr(card, "current_deck_id", None)
+        deck_id = current_deck_id() if callable(current_deck_id) else (
+            _int_attr(card, "odid", 0) or _int_attr(card, "did", 0)
+        )
+        config = col.decks.config_dict_for_deck_id(deck_id)
+    except Exception:
+        return False, False, False
+    new_config = config.get("new", {}) if isinstance(config, dict) else {}
+    review_config = config.get("rev", {}) if isinstance(config, dict) else {}
+    return (
+        bool(new_config.get("bury", False)),
+        bool(review_config.get("bury", False)),
+        bool(config.get("buryInterdayLearning", False)),
+    )
 
 
 def _answer_with_anki_scheduler(mw: Any, answers: Sequence[CardAnswer]) -> AnswerSummary:
@@ -551,8 +798,50 @@ def _debug_answer_summary(summary: AnswerSummary) -> Dict[str, Any]:
         "answered_card_ids": summary.answered_card_ids,
         "unknown_card_ids": summary.unknown_card_ids,
         "known_card_ids": summary.known_card_ids,
+        "completed_card_ids": list(summary.completed_card_ids or ()),
         "has_undo_snapshot": summary.undo_snapshot is not None,
     }
+
+
+def _with_completed_card_ids(mw: Any, summary: AnswerSummary) -> AnswerSummary:
+    """Mark Good cards complete only when their next step leaves today's lesson."""
+    known_card_ids = _unique_ids(summary.known_card_ids)
+    states = {
+        int(state["card_id"]): state
+        for state in _debug_card_states(mw, known_card_ids)
+        if state.get("card_id") is not None
+    }
+    today = int(getattr(getattr(getattr(mw, "col", None), "sched", None), "today", 0) or 0)
+    completed_card_ids = [
+        card_id
+        for card_id in known_card_ids
+        if _card_state_is_beyond_current_lesson(states.get(card_id), today)
+    ]
+    return AnswerSummary(
+        answered_card_ids=list(summary.answered_card_ids),
+        unknown_card_ids=list(summary.unknown_card_ids),
+        known_card_ids=list(summary.known_card_ids),
+        undo_snapshot=summary.undo_snapshot,
+        completed_card_ids=completed_card_ids,
+    )
+
+
+def _card_state_is_beyond_current_lesson(
+    state: Optional[Dict[str, Any]],
+    today: int,
+) -> bool:
+    if not state or state.get("error"):
+        return False
+    try:
+        queue = int(state.get("queue"))
+        due = int(state.get("due"))
+    except (TypeError, ValueError):
+        return False
+
+    # Queue 1 is an intraday learning/relearning step. Queue 2 is a normal
+    # review, and queue 3 is a day-based learning step; the latter two have
+    # left today's lesson only when their next due day is after today.
+    return queue in (2, 3) and due > int(today)
 
 
 def _debug_card_states(mw: Any, card_ids: Sequence[int]) -> List[Dict[str, Any]]:
@@ -887,7 +1176,7 @@ def _definition_value(note: Any, config: ContextConfig) -> str:
     checked: Set[str] = set()
     for field_name in preferred:
         key = _field_name_key(field_name)
-        if not key or key in checked:
+        if not key or key == target_key or key in checked:
             continue
         checked.add(key)
         value = _field_value(note, field_name)
@@ -938,8 +1227,13 @@ def _solution_field_values(
     return tuple(values)
 
 
-def _first_text_solution(values: Sequence[SolutionFieldValue]) -> str:
+def _first_text_solution(
+    values: Sequence[SolutionFieldValue], excluded_field: str = ""
+) -> str:
+    excluded_key = _field_name_key(excluded_field)
     for value in values:
+        if excluded_key and _field_name_key(value.field) == excluded_key:
+            continue
         if value.text.strip():
             return value.text.strip()
     return ""
@@ -1048,6 +1342,13 @@ def card_question_contains_target_field(card: Any, note: Any, target_field: str)
     return _card_question_contains_field(card, note, target_field)
 
 
+def card_review_direction(
+    card: Any, note: Any, config: ContextConfig
+) -> Tuple[str, bool]:
+    """Return the configured review direction and whether the template is eligible."""
+    return _card_review_direction(card, note, config)
+
+
 def card_template_labels(card: Any, note: Any) -> List[str]:
     return _card_template_labels(card, note)
 
@@ -1065,7 +1366,7 @@ def card_question_field_names(card: Any, note: Any) -> Set[str]:
     template = _card_template(card, note)
     if not template:
         return set()
-    return _template_field_names(str(template.get("qfmt", "") or ""))
+    return visible_question_field_names(str(template.get("qfmt", "") or ""))
 
 
 def card_question_format(card: Any, note: Any) -> str:
@@ -1079,6 +1380,76 @@ def _card_template_allowed(card: Any, note: Any, included_templates: Sequence[st
         return True
     labels = {_template_label_key(item) for item in _card_template_labels(card, note)}
     return bool(labels.intersection(allowed))
+
+
+def _card_review_direction(
+    card: Any, note: Any, config: ContextConfig
+) -> Tuple[str, bool]:
+    """Classify an eligible card while preserving the legacy template allow-list."""
+    recognition_templates = getattr(config, "included_card_templates", ()) or ()
+    recall_templates = getattr(config, "recall_templates", ()) or ()
+    recognition_match = _card_template_matches(card, note, recognition_templates)
+    recall_match = _card_template_matches(card, note, recall_templates)
+
+    if recognition_match and recall_match:
+        if _card_question_contains_field(card, note, config.target_field):
+            return "recognition", True
+        if _card_question_contains_native_field(card, note, config):
+            return "recall", True
+        return "recall", False
+    if recall_match:
+        # Recall templates are an independent allow-list, so a reverse card can
+        # be enabled without also adding it to the legacy recognition list.
+        return "recall", _card_question_contains_native_field(card, note, config)
+    if recall_templates and not recognition_templates:
+        # Once a profile explicitly enables recall routing, an empty
+        # recognition list means recall-only. Legacy profiles (which have no
+        # recall list) retain the historical empty-means-all behavior.
+        return "recognition", False
+    return "recognition", _card_template_allowed(card, note, recognition_templates)
+
+
+def _card_template_matches(
+    card: Any, note: Any, included_templates: Sequence[str]
+) -> bool:
+    allowed = {_template_label_key(item) for item in included_templates if str(item).strip()}
+    if not allowed:
+        return False
+    labels = {_template_label_key(item) for item in _card_template_labels(card, note)}
+    return bool(labels.intersection(allowed))
+
+
+def _card_question_contains_native_field(
+    card: Any, note: Any, config: ContextConfig
+) -> bool:
+    fields = {_field_name_key(field) for field in card_question_field_names(card, note)}
+    target = _field_name_key(config.target_field)
+    candidates = {
+        _field_name_key(getattr(config, "dictionary_field", "")),
+        *(
+            _field_name_key(getattr(spec, "field", ""))
+            for spec in (getattr(config, "solution_fields", ()) or ())
+        ),
+        *(
+            _field_name_key(field)
+            for field in (
+                "Back",
+                "Definition",
+                "Meaning",
+                "Translation",
+                "English",
+                "Native",
+                "Answer",
+            )
+        ),
+    }
+    candidates.discard("")
+    candidates.discard(target)
+    return bool(fields.intersection(candidates))
+
+
+def _normalized_direction(direction: Any) -> str:
+    return "recall" if str(direction or "").strip().casefold() == "recall" else "recognition"
 
 
 def _card_template_labels(card: Any, note: Any) -> List[str]:
@@ -1102,7 +1473,7 @@ def _card_question_contains_field(card: Any, note: Any, target_field: str) -> bo
     qfmt = str(template.get("qfmt", "") or "")
     if not qfmt.strip():
         return False
-    fields = _template_field_names(qfmt)
+    fields = visible_question_field_names(qfmt)
     if not fields:
         return False
     normalized_target = _field_name_key(target)
@@ -1153,31 +1524,6 @@ def _card_ordinal(card: Any) -> int:
     return 0
 
 
-def _template_field_names(qfmt: str) -> Set[str]:
-    names: Set[str] = set()
-    for match in re.finditer(r"{{\s*([^{}]+?)\s*}}", qfmt):
-        expression = match.group(1).strip()
-        field_name = _field_name_from_template_expression(expression)
-        if field_name:
-            names.add(field_name)
-    return names
-
-
-def _field_name_from_template_expression(expression: str) -> str:
-    expression = str(expression or "").strip()
-    if not expression:
-        return ""
-    if expression[0] in "#/^":
-        expression = expression[1:].strip()
-    elif expression.startswith("/"):
-        expression = expression[1:].strip()
-    if ":" in expression:
-        expression = expression.rsplit(":", 1)[-1].strip()
-    if not expression or expression in {"FrontSide", "Tags", "Deck", "Subdeck", "Card"}:
-        return ""
-    return expression
-
-
 def _field_name_key(field_name: str) -> str:
     return re.sub(r"\s+", " ", str(field_name or "").strip()).casefold()
 
@@ -1198,6 +1544,14 @@ def _card_allowed(card: Any, config: ContextConfig) -> bool:
 
 def _card_is_new(card: Any) -> bool:
     return _card_queue(card) == 0 or _card_type(card) == 0
+
+
+def _card_is_learning(card: Any) -> bool:
+    return _card_queue(card) in (1, 3) or _card_type(card) in (1, 3)
+
+
+def _intraday_learning_step_is_early(card: Any, now: int) -> bool:
+    return _card_queue(card) == 1 and _int_attr(card, "due", 0) > int(now)
 
 
 def _card_is_in_filtered_deck(mw: Any, card_id: Any, card: Any) -> bool:
