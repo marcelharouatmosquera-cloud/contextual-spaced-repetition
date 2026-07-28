@@ -128,6 +128,7 @@ let contextHoverTimer = null;
 let contextHideTimer = null;
 let contextHoverRequest = 0;
 let contextHoverNode = null;
+const CONTEXT_HOVER_DELAY_MS = 80;
 let solutionRevealed = false;
 let sentenceTranslation = task.translation || "";
 let sentenceTranslationTimer = null;
@@ -508,7 +509,7 @@ function scheduleContextTranslation(span) {
       text: word,
       request_id: requestId
     }));
-  }, 180);
+  }, CONTEXT_HOVER_DELAY_MS);
 }
 
 function cancelContextTranslation(span) {
@@ -542,6 +543,11 @@ function showContextTranslation(span, text, loading = false, canMine = !loading)
     mine.type = "button";
     mine.className = "mine-word";
     mine.textContent = "Add Note";
+    mine.title = "Creates a new note using this deck's note type and places its new cards at the front of the New queue.";
+    mine.setAttribute(
+      "aria-label",
+      "Add Note. Creates a new note using this deck's note type and places its new cards at the front of the New queue."
+    );
     mine.addEventListener("click", () => {
       window.clearTimeout(contextHideTimer);
       contextTranslationTooltip.dataset.mining = "true";
