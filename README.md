@@ -122,7 +122,9 @@ note types with forward and reverse templates generate both cards. The detected
 target, translation, example-sentence, and audio fields are filled when present;
 the generated New cards are moved to the front through Anki's scheduler API.
 Automatic word audio is enabled by default and can be disabled in Advanced /
-Nerd Settings.
+Nerd Settings. The same tab has an optional `Increase today's New limit for
+mined cards` switch. When enabled, it adds one temporary New-card slot per card
+Anki actually generates, so a forward-and-reverse note normally adds two.
 
 Clicked target cards are answered as `Again`. Unclicked target cards are
 answered as `Good`. The add-on schedules those linked cards as a contextual

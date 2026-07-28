@@ -68,6 +68,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.matching_mode, "lemma_family")
         self.assertEqual((config.min_sentence_words, config.max_sentence_words), (4, 12))
         self.assertTrue(config.auto_mine_tts)
+        self.assertFalse(config.increase_new_limit_after_mining)
         self.assertTrue(config.include_due_cards)
         self.assertFalse(config.include_new_cards)
         self.assertEqual(config.max_new_cards, 10)
@@ -77,6 +78,11 @@ class ConfigTests(unittest.TestCase):
         config = normalize_config({"autoplay_sentence_tts": True})
 
         self.assertTrue(config.autoplay_sentence_tts)
+
+    def test_mined_card_limit_increase_can_be_enabled(self) -> None:
+        config = normalize_config({"increase_new_limit_after_mining": True})
+
+        self.assertTrue(config.increase_new_limit_after_mining)
 
     def test_load_config_migrates_legacy_search_query(self) -> None:
         mw = FakeMw({"search_query": "is:due deck:Russian"})

@@ -1,7 +1,6 @@
-# Smart Context Card (Future Plan)
+# Smart Context Card
 
-Status: design only. No card-creation, queue, deck-limit, or media behavior is
-implemented by this document.
+Status: implemented. Keep this document as the safety and behavior reference.
 
 ## Goal
 
@@ -20,8 +19,8 @@ context sentence without opening Anki's general Add window.
    APIs. An Advanced / Nerd Settings toggle disables this behavior.
 6. The new card is placed at the front of the new-card queue through Anki's
    supported collection/scheduler APIs.
-7. An optional, explicit setting allows today's new-card allowance to increase
-   by one when the normal limit would hide the contextual card.
+7. An optional Nerd setting increases today's new-card allowance by the number
+   of New cards the selected note type actually generated.
 
 ## Safety constraints
 
@@ -47,4 +46,3 @@ context sentence without opening Anki's general Add window.
    Anki backend API and its interaction with deck presets and subdecks.
 6. Run an in-Anki acceptance test; unit tests alone cannot confirm scheduler UI
    order, sync behavior, or the effective daily limit.
-

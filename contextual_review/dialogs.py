@@ -396,6 +396,13 @@ def _open_settings_editor_dialog(
     auto_mine_tts.setToolTip(
         "Generate target-language audio when Add Note is used from a hover translation."
     )
+    increase_new_limit_after_mining = QCheckBox()
+    increase_new_limit_after_mining.setChecked(config.increase_new_limit_after_mining)
+    increase_new_limit_after_mining.setToolTip(
+        "After Add Note succeeds, temporarily increase today's New-card limit by the "
+        "number of cards Anki actually generated. A forward-and-reverse note therefore "
+        "normally adds two slots; a one-card note adds one."
+    )
     strict_import = QCheckBox()
     strict_import.setChecked(config.strict_import_filter)
     keep_downloads = QCheckBox()
@@ -527,6 +534,10 @@ def _open_settings_editor_dialog(
     advanced_form.addRow("Only use verified sentences", strict_import)
     advanced_form.addRow("Keep downloaded archives", keep_downloads)
     advanced_form.addRow("Add audio to mined notes", auto_mine_tts)
+    advanced_form.addRow(
+        "Increase today's New limit for mined cards",
+        increase_new_limit_after_mining,
+    )
     advanced_form.addRow("Sentence text size", font_size)
 
     maintenance_group = QGroupBox("Import and Maintenance")
@@ -696,6 +707,9 @@ def _open_settings_editor_dialog(
         include_learning.setChecked(source_config.include_learning_cards)
         autoplay_sentence_tts.setChecked(source_config.autoplay_sentence_tts)
         auto_mine_tts.setChecked(source_config.auto_mine_tts)
+        increase_new_limit_after_mining.setChecked(
+            source_config.increase_new_limit_after_mining
+        )
         strict_import.setChecked(source_config.strict_import_filter)
         keep_downloads.setChecked(source_config.keep_downloaded_archives)
         apply_solution_mapping(source_config)
@@ -1073,6 +1087,7 @@ def _open_settings_editor_dialog(
         "include_learning_cards": include_learning.isChecked(),
         "autoplay_sentence_tts": autoplay_sentence_tts.isChecked(),
         "auto_mine_tts": auto_mine_tts.isChecked(),
+        "increase_new_limit_after_mining": increase_new_limit_after_mining.isChecked(),
         "strict_import_filter": strict_import.isChecked(),
         "keep_downloaded_archives": keep_downloads.isChecked(),
     }

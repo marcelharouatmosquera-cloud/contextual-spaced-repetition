@@ -35,6 +35,7 @@
   "include_learning_cards": true,
   "autoplay_sentence_tts": false,
   "auto_mine_tts": true,
+  "increase_new_limit_after_mining": false,
   "strict_import_filter": true,
   "keep_downloaded_archives": false,
   "dictionary_url_template": "",

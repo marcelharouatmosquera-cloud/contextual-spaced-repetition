@@ -57,6 +57,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "include_learning_cards": True,
     "autoplay_sentence_tts": False,
     "auto_mine_tts": True,
+    "increase_new_limit_after_mining": False,
     "strict_import_filter": True,
     "keep_downloaded_archives": False,
     "dictionary_url_template": "",
@@ -108,6 +109,7 @@ class ContextConfig:
     include_learning_cards: bool
     autoplay_sentence_tts: bool
     auto_mine_tts: bool
+    increase_new_limit_after_mining: bool
     strict_import_filter: bool
     keep_downloaded_archives: bool
     dictionary_url_template: str
@@ -205,6 +207,9 @@ def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
         include_learning_cards=_bool(raw.get("include_learning_cards"), True),
         autoplay_sentence_tts=_bool(raw.get("autoplay_sentence_tts"), False),
         auto_mine_tts=_bool(raw.get("auto_mine_tts"), True),
+        increase_new_limit_after_mining=_bool(
+            raw.get("increase_new_limit_after_mining"), False
+        ),
         strict_import_filter=_bool(raw.get("strict_import_filter"), True),
         keep_downloaded_archives=_bool(raw.get("keep_downloaded_archives"), False),
         dictionary_url_template=dictionary_url_template,

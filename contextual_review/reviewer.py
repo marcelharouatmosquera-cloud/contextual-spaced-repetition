@@ -754,6 +754,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     len(result.card_ids),
                     "" if len(result.card_ids) == 1 else "s",
                 )
+                if result.new_limit_increase:
+                    message += " Today's New limit increased by %s." % result.new_limit_increase
                 if audio_error:
                     message += " Audio was unavailable."
                 elif audio_path is not None and not result.audio_added:

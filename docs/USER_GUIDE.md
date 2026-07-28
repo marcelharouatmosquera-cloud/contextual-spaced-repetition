@@ -188,6 +188,12 @@ attached by default when the note type has an audio field. All templates on the
 note type are generated automatically and the resulting New cards are moved to
 the front with Anki's native reposition operation.
 
+In Advanced / Nerd Settings, enable `Increase today's New limit for mined
+cards` if mining should also make room in today's New-card allowance. The
+increase is automatic: one generated card adds one slot, while a note type that
+actually generates forward and reverse cards adds two slots. The adjustment is
+for today only.
+
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.
 Press `Ctrl+Z` to undo the last contextual review and return to its sentence.

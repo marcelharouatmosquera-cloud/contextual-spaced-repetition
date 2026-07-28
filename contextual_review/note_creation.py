@@ -21,6 +21,7 @@ class MiningResult:
     note_id: int
     card_ids: Tuple[int, ...]
     audio_added: bool
+    new_limit_increase: int
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ def create_mined_note(
             note[audio_field] = "[sound:%s]" % media_name
             audio_added = True
 
+    new_limit_increase = 0
     undo_entry = _begin_undo(col, "Add Contextual Note")
     try:
         _add_note(col, note, deck_id)
@@ -112,12 +114,16 @@ def create_mined_note(
         if new_card_ids:
             _reposition_new_cards_first(col, new_card_ids)
             _merge_undo(col, undo_entry)
+            if config.increase_new_limit_after_mining:
+                _extend_today_new_limit(col, deck_id, len(new_card_ids))
+                new_limit_increase = len(new_card_ids)
+                _merge_undo(col, undo_entry)
     except Exception:
         _rollback_undo(col)
         raise
 
     _refresh(mw)
-    return MiningResult(int(note.id), card_ids, audio_added)
+    return MiningResult(int(note.id), card_ids, audio_added, new_limit_increase)
 
 
 def export_favorites_to_anki(
@@ -408,6 +414,30 @@ def _reposition_new_cards_first(col: Any, card_ids: Sequence[int]) -> None:
         randomize=False,
         shift_existing=True,
     )
+
+
+def _extend_today_new_limit(col: Any, deck_id: int, new_cards: int) -> None:
+    """Temporarily add one New-card slot for each newly generated card."""
+    if new_cards <= 0:
+        return
+    decks = getattr(col, "decks", None)
+    current = getattr(decks, "current", None)
+    select = getattr(decks, "select", None)
+    extend_limits = getattr(getattr(col, "sched", None), "extend_limits", None)
+    if not callable(current) or not callable(select) or not callable(extend_limits):
+        raise RuntimeError(
+            "This Anki version does not expose native temporary deck-limit controls."
+        )
+    current_deck = current()
+    original_deck_id = (
+        int(current_deck.get("id", 0) or 0) if isinstance(current_deck, dict) else 0
+    )
+    try:
+        select(int(deck_id))
+        extend_limits(int(new_cards), 0)
+    finally:
+        if original_deck_id:
+            select(original_deck_id)
 
 
 def _begin_undo(col: Any, label: str) -> int:

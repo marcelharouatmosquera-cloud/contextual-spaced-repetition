@@ -23,6 +23,7 @@ class FakeNote(dict):
 class FakeDecks:
     def __init__(self):
         self.created = []
+        self.selected_id = 7
 
     def get(self, deck_id):
         return {"id": deck_id, "name": "Vocabulary" if deck_id == 7 else "Contextual Review Favorites"}
@@ -31,13 +32,23 @@ class FakeDecks:
         self.created.append(name)
         return 99
 
+    def current(self):
+        return {"id": self.selected_id, "name": "Vocabulary"}
+
+    def select(self, deck_id):
+        self.selected_id = int(deck_id)
+
 
 class FakeScheduler:
     def __init__(self):
         self.repositioned = []
+        self.extended = []
 
     def reposition_new_cards(self, **kwargs):
         self.repositioned.append(kwargs)
+
+    def extend_limits(self, new, rev):
+        self.extended.append((new, rev))
 
 
 class FakeMedia:
@@ -173,6 +184,7 @@ class NoteCreationTests(unittest.TestCase):
         self.assertEqual(note["Example Sentence"], "Der Hund schläft.")
         self.assertEqual(note["Audio"], "[sound:mined.mp3]")
         self.assertEqual(len(result.card_ids), 2)
+        self.assertEqual(result.new_limit_increase, 0)
         self.assertEqual(
             mw.col.sched.repositioned,
             [
@@ -188,6 +200,32 @@ class NoteCreationTests(unittest.TestCase):
         self.assertEqual(mw.col.undo_labels, ["Add Contextual Note"])
         self.assertEqual(mw.col.merged, [42, 42])
         self.assertTrue(mw.reset_called)
+
+    def test_mining_increases_today_limit_by_actual_generated_card_count(self):
+        mw = self._mw()
+        task = ReviewTask(
+            1,
+            "de",
+            "Der Hund schläft.",
+            None,
+            [],
+            {"hund": [10]},
+            target_words=(TargetWordDefinition(10, "Hund", "dog"),),
+        )
+        config = normalize_config(
+            {
+                "target_field": "German",
+                "dictionary_field": "English",
+                "increase_new_limit_after_mining": True,
+            }
+        )
+
+        result = create_mined_note(mw, task, "Hund", "dog", config)
+
+        self.assertEqual(result.new_limit_increase, 2)
+        self.assertEqual(mw.col.sched.extended, [(2, 0)])
+        self.assertEqual(mw.col.decks.selected_id, 7)
+        self.assertEqual(mw.col.merged, [42, 42, 42])
 
     def test_duplicate_mined_word_is_rejected_before_an_undo_entry(self):
         mw = self._mw()
