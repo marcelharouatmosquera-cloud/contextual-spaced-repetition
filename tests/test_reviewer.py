@@ -377,6 +377,36 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertTrue(captured[0].include_new_cards)
         self.assertFalse(captured[0].include_due_cards)
 
+    def test_pending_mined_recall_is_recovered_after_recognition_left_new(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config(
+            {
+                "include_new_cards": False,
+                "included_card_templates": ["Card 1"],
+                "recall_templates": ["Card 2"],
+            }
+        )
+        dialog.mw = object()
+        dialog._pending_mined_scan_complete = True
+        dialog._queued_mined_due_card_batches = []
+        recall = DueCard(
+            card_id=21,
+            target_word="lernen",
+            lemma="lernen",
+            direction="recall",
+            note_id=99,
+        )
+        captured = []
+        original = reviewer.collect_due_cards
+        reviewer.collect_due_cards = lambda mw, config: captured.append(config) or [recall]
+        try:
+            queued = dialog._queue_pending_mined_notes_for_review(force_rescan=True)
+        finally:
+            reviewer.collect_due_cards = original
+
+        self.assertEqual(queued, (21,))
+        self.assertEqual(dialog._queued_mined_due_card_batches, [(recall,)])
+
     def test_queued_mined_card_becomes_the_only_next_selection_batch(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         mined = DueCard(card_id=20, target_word="lernen", lemma="lernen")
@@ -390,6 +420,58 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog._due_cards_cache, (mined,))
         self.assertTrue(dialog._due_cards_cache_is_mined)
         self.assertEqual(loads, [True])
+
+    def test_queued_mined_reverse_waits_behind_an_unrelated_batch(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        reverse = DueCard(
+            card_id=11,
+            target_word="back",
+            lemma="back",
+            direction="recall",
+            note_id=1,
+        )
+        unrelated = DueCard(
+            card_id=20,
+            target_word="other",
+            lemma="other",
+            direction="recognition",
+            note_id=2,
+        )
+        dialog._queued_mined_due_card_batches = [(reverse,), (unrelated,)]
+        dialog._session_reviewed_card_notes = [{10: 1}]
+        dialog._load_next_task = lambda: None
+
+        loaded = dialog._load_queued_mined_task()
+
+        self.assertTrue(loaded)
+        self.assertEqual(dialog._due_cards_cache, (unrelated,))
+        self.assertEqual(dialog._queued_mined_due_card_batches, [(reverse,)])
+
+    def test_queued_mined_reverse_waits_for_normal_work_when_all_batches_are_siblings(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        reverse = DueCard(
+            card_id=11,
+            target_word="back",
+            lemma="back",
+            direction="recall",
+            note_id=1,
+        )
+        dialog._queued_mined_due_card_batches = [(reverse,)]
+        dialog._session_reviewed_card_notes = [{10: 1}]
+        dialog._load_next_task = lambda: None
+
+        loaded = dialog._load_queued_mined_task()
+
+        self.assertFalse(loaded)
+        self.assertEqual(dialog._queued_mined_due_card_batches, [(reverse,)])
+
+        loaded_at_session_end = dialog._load_queued_mined_task(
+            ignore_sibling_spacing=True
+        )
+
+        self.assertTrue(loaded_at_session_end)
+        self.assertEqual(dialog._due_cards_cache, (reverse,))
+        self.assertEqual(dialog._queued_mined_due_card_batches, [])
 
     def test_mined_follow_up_can_reuse_the_sentence_it_was_mined_from(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -688,6 +770,10 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog._session_results = []
         dialog._session_forgotten_words = []
         dialog._queued_mined_due_card_batches = []
+        rescans = []
+        dialog._queue_pending_mined_notes_for_review = (
+            lambda force_rescan=False: rescans.append(force_rescan) or ()
+        )
         dialog.web = SimpleNamespace(eval=lambda _script: None)
         loads = []
         dialog._load_next_task = lambda refresh_due_cards=False: loads.append(
@@ -718,6 +804,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog.review_history[0][1], [20])
         self.assertEqual(dialog._session_results, [(0, 0)])
         self.assertEqual(dialog._session_forgotten_words, [[]])
+        self.assertEqual(rescans, [True])
         self.assertEqual(loads, [True])
 
     def test_undo_restores_previous_contextual_sentence(self) -> None:

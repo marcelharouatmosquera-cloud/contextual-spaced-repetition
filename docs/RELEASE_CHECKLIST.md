@@ -30,7 +30,7 @@ Use this before publishing a build to AnkiWeb.
 - Add, remove, reorder, and relabel solution fields; verify text, image, and audio display modes.
 - Confirm an audio field can be played manually and that auto-play triggers at most one audio item when the solution opens.
 - With Learn New Cards disabled, mine a word and confirm the success banner, `mined-word` tag, native undo label, and one-card contextual introduction after grading the current sentence. Confirm it cannot be marked Good/Again, says `Start Learning`, and places only that exact card at Anki's first learning step through Again.
-- Mine another word with Learn New Cards disabled, close the review window before grading, reopen Contextual Review, and confirm its recognition-card introduction is recovered before ordinary due work without also introducing the reverse sibling.
+- Mine another word with Learn New Cards disabled, close the review window before grading, reopen Contextual Review, and confirm recognition is recovered first. After starting it, confirm the masked recall sibling is also recovered, is separated by two unrelated sentences when available, and is still shown at session end when no other work exists.
 - Confirm the Tools menu contains only Start Review, Favorite Sentences, Settings, Quick Guide, and Diagnostics.
 - Confirm Basic Setup contains auto-configuration and the Sentence Library without requiring a separate setup wizard.
 - Confirm custom sentence import, word-form import, and full database deletion remain available in Advanced / Nerd Settings.

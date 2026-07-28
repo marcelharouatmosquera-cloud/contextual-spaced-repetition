@@ -133,8 +133,9 @@ reveal the meaning and choose `Start Learning`. The add-on answers only that
 exact card as Again through Anki, placing it at its first learning step. Later
 appearances use the normal Again/Good controls. Pending mined introductions are
 recovered from the `mined-word` tag and New-card state after the review window
-or Anki is restarted, while already introduced recognition cards are not
-queued again.
+or Anki is restarted. Recognition is introduced first; a New recall sibling is
+then introduced separately after two unrelated sentences when other work is
+available, or at the end of the session rather than being stranded.
 A visible success banner confirms the word and card count and explains Ctrl+Z.
 
 Clicked target cards are answered as `Again`. Unclicked target cards are

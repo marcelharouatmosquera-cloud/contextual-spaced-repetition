@@ -204,9 +204,12 @@ answered Again through Anki so it enters its first learning step; normal
 Again/Good grading begins on later appearances. The introduction is not counted
 as a forgotten word. If the window or Anki closes first, the next Contextual
 Review session recovers pending New recognition cards tagged `mined-word` and
-shows their introductions before ordinary due work. A confirmation banner
-reports the word and generated-card count, and Ctrl+Z immediately removes the
-new note.
+shows their introductions before ordinary due work. After recognition enters
+Learning, its New recall sibling receives its own masked introduction. The
+add-on puts two unrelated sentences between the sibling directions when it can,
+but shows the recall card at session end if no other work is available. A
+confirmation banner reports the word and generated-card count, and Ctrl+Z
+immediately removes the new note.
 
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.

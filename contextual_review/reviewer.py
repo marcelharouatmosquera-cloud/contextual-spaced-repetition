@@ -286,6 +286,12 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             return
 
         if not due_cards:
+            # A mined reverse introduction may have been held back to create
+            # space after its recognition sibling. If there is no ordinary
+            # work left, show it now instead of stranding it until the next
+            # review window.
+            if self._load_queued_mined_task(ignore_sibling_spacing=True):
+                return
             self.active_task = None
             summary = self._session_summary_text()
             if summary:
@@ -642,6 +648,12 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._session_forgotten_words = session_forgotten_words
         session_forgotten_words.append(list(dict.fromkeys(forgotten_words)))
         self.active_task = None
+        if is_mined_introduction:
+            # Grading a mined introduction moves that exact card out of New.
+            # After recognition, a fresh tagged-New scan can see its recall
+            # sibling, which collect_due_cards correctly deferred while both
+            # directions were New.
+            self._queue_pending_mined_notes_for_review(force_rescan=True)
         interrupted_tasks = getattr(self, "_interrupted_tasks", [])
         if interrupted_tasks:
             task = interrupted_tasks.pop(0)
@@ -955,9 +967,14 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         batches.append(batch)
         return (selected_card_id,)
 
-    def _queue_pending_mined_notes_for_review(self) -> Tuple[int, ...]:
-        """Recover unintroduced mined recognition cards after closing/restarting."""
-        if bool(getattr(self, "_pending_mined_scan_complete", False)):
+    def _queue_pending_mined_notes_for_review(
+        self, force_rescan: bool = False
+    ) -> Tuple[int, ...]:
+        """Recover every pending mined direction without mixing siblings."""
+        if (
+            bool(getattr(self, "_pending_mined_scan_complete", False))
+            and not force_rescan
+        ):
             return ()
         self._pending_mined_scan_complete = True
         if bool(getattr(self.config, "include_new_cards", False)):
@@ -980,13 +997,6 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             append_debug_log("pending_mined_scan_error", error=str(exc))
             return ()
 
-        # If the recognition card was already introduced, its remaining New
-        # recall sibling must not be mistaken for another pending introduction.
-        recognition_candidates = [
-            card
-            for card in candidates
-            if str(card.direction or "").strip().casefold() != "recall"
-        ]
         existing_batches = getattr(self, "_queued_mined_due_card_batches", [])
         existing_card_ids = {
             int(card.card_id)
@@ -995,7 +1005,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         }
         grouped: Dict[int, List[DueCard]] = {}
         card_note_ids: Dict[int, int] = {}
-        for card in recognition_candidates:
+        for card in candidates:
             card_id = int(card.card_id)
             if card_id in existing_card_ids:
                 continue
@@ -1017,14 +1027,31 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             "pending_mined_scan",
             candidate_card_ids=sorted(grouped),
             queued_card_ids=queued_ids,
+            queued_directions=[
+                str(grouped[card_id][0].direction or "recognition")
+                for card_id in queued_ids
+            ],
         )
         return tuple(queued_ids)
 
-    def _load_queued_mined_task(self) -> bool:
+    def _load_queued_mined_task(self, ignore_sibling_spacing: bool = False) -> bool:
         batches = getattr(self, "_queued_mined_due_card_batches", [])
         if not batches:
             return False
-        self._due_cards_cache = tuple(batches.pop(0))
+        selected_index = 0
+        if not ignore_sibling_spacing:
+            reviewed_notes = getattr(self, "_session_reviewed_card_notes", [])
+            selected_index = next(
+                (
+                    index
+                    for index, batch in enumerate(batches)
+                    if not _batch_is_recent_sibling(batch, reviewed_notes)
+                ),
+                -1,
+            )
+            if selected_index < 0:
+                return False
+        self._due_cards_cache = tuple(batches.pop(selected_index))
         self._due_cards_cache_is_mined = True
         self._load_next_task()
         return True
@@ -1593,6 +1620,30 @@ def _defer_recent_sibling_due_cards(
     preferred = [card for card in cards if not is_recent_sibling(card)]
     # Never strand a due sibling when it is the only work available.
     return preferred or cards
+
+
+def _batch_is_recent_sibling(
+    due_cards: Iterable[DueCard],
+    reviewed_card_note_batches: Iterable[Dict[int, int]],
+    gap_sentences: int = SIBLING_NOTE_GAP_SENTENCES,
+) -> bool:
+    """Return whether a mined batch is a sibling that still needs spacing."""
+    cards = list(due_cards)
+    gap = max(0, int(gap_sentences))
+    if not cards or gap == 0:
+        return False
+    recent_batches = list(reviewed_card_note_batches)[-gap:]
+    if not recent_batches:
+        return False
+    for card in cards:
+        note_id = int(card.note_id or 0)
+        card_id = int(card.card_id)
+        if not note_id:
+            continue
+        for reviewed in reversed(recent_batches):
+            if note_id in reviewed.values() and card_id not in reviewed:
+                return True
+    return False
 
 
 def _task_has_recall(task: ReviewTask) -> bool:
