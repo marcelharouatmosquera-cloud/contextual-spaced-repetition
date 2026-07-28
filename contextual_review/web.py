@@ -71,6 +71,9 @@ def render_task_html(
     <div id="question-translation-text" class="translation"></div>
     <p id="question-translation-note" class="translation-note" hidden></p>
   </section>
+  <section id="translation-retry-controls" class="translation-retry-controls" hidden>
+    <button id="retry-sentence-translation" class="compact-action" type="button">Retry Translation</button>
+  </section>
   <div id="context-translation-tooltip" class="context-translation-tooltip" role="status" hidden></div>
   <section class="sentence-audio-controls">
     <button id="speak-sentence" class="compact-action" type="button" title="Read this sentence using an online voice">&#x1F50A; Read sentence</button>
@@ -102,6 +105,8 @@ const sentence = document.getElementById("sentence");
 const questionTranslation = document.getElementById("question-translation");
 const questionTranslationText = document.getElementById("question-translation-text");
 const questionTranslationNote = document.getElementById("question-translation-note");
+const translationRetryControls = document.getElementById("translation-retry-controls");
+const retrySentenceTranslation = document.getElementById("retry-sentence-translation");
 const contextTranslationTooltip = document.getElementById("context-translation-tooltip");
 const solution = document.getElementById("solution");
 const translation = document.getElementById("translation");
@@ -125,6 +130,8 @@ let contextHoverRequest = 0;
 let contextHoverNode = null;
 let solutionRevealed = false;
 let sentenceTranslation = task.translation || "";
+let sentenceTranslationTimer = null;
+let sentenceTranslationRequest = 0;
 
 function forceReadable(node, color) {
   node.style.setProperty("color", color, "important");
@@ -219,12 +226,43 @@ function renderSolution() {
 }
 
 function requestAutomaticSentenceTranslation() {
+  window.clearTimeout(sentenceTranslationTimer);
+  const requestId = ++sentenceTranslationRequest;
+  translation.textContent = "Translating automatically...";
+  translationNote.hidden = true;
+  translationRetryControls.hidden = true;
+  if (Boolean(task.hasRecall)) {
+    questionTranslationText.textContent = "Translating automatically...";
+    questionTranslationNote.hidden = true;
+  }
+  sentenceTranslationTimer = window.setTimeout(() => {
+    if (requestId === sentenceTranslationRequest && !sentenceTranslation) {
+      showSentenceTranslationFailure(
+        "Automatic translation timed out. Check your internet connection, then retry."
+      );
+    }
+  }, 15000);
   pycmd(JSON.stringify({
     action: "translate_sentence",
     sentence: task.sentenceText || "",
-    request_id: 0
+    request_id: requestId
   }));
 }
+
+function showSentenceTranslationFailure(message) {
+  window.clearTimeout(sentenceTranslationTimer);
+  translation.textContent = message;
+  translationNote.textContent = "Automatic translation unavailable.";
+  translationNote.hidden = false;
+  translationRetryControls.hidden = false;
+  if (Boolean(task.hasRecall)) {
+    questionTranslationText.textContent = message;
+    questionTranslationNote.textContent = "Automatic translation unavailable.";
+    questionTranslationNote.hidden = false;
+  }
+}
+
+retrySentenceTranslation.addEventListener("click", requestAutomaticSentenceTranslation);
 
 function renderTargetWords() {
   const words = Array.isArray(task.targetWords) ? task.targetWords : [];
@@ -535,20 +573,18 @@ function showContextTranslation(span, text, loading = false, canMine = !loading)
 
 window.contextualTranslationFinished = (kind, requestId, sourceText, translatedText, error) => {
   if (kind === "sentence") {
+    if (Number(requestId) !== sentenceTranslationRequest) {
+      return;
+    }
+    window.clearTimeout(sentenceTranslationTimer);
     if (error) {
-      translation.textContent = error;
-      translationNote.textContent = "Automatic translation unavailable.";
-      translationNote.hidden = false;
-      if (Boolean(task.hasRecall)) {
-        questionTranslationText.textContent = error;
-        questionTranslationNote.textContent = "Automatic translation unavailable.";
-        questionTranslationNote.hidden = false;
-      }
+      showSentenceTranslationFailure(error);
     } else {
       sentenceTranslation = translatedText;
       translation.textContent = sentenceTranslation;
       translationNote.textContent = "Automatically translated - may contain mistakes.";
       translationNote.hidden = false;
+      translationRetryControls.hidden = true;
       if (Boolean(task.hasRecall)) {
         questionTranslationText.textContent = sentenceTranslation;
         questionTranslationNote.textContent = "Automatically translated - may contain mistakes.";
@@ -1102,6 +1138,7 @@ body {
 .review-header,
 .sentence,
 .question-translation,
+.translation-retry-controls,
 .sentence-audio-controls,
 .solution,
 .review-shell > .actions {

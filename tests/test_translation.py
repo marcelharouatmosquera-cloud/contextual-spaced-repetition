@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import sys
+from types import ModuleType
 
 from contextual_review import translation
 
@@ -33,6 +35,31 @@ class TranslationTests(unittest.TestCase):
             calls,
             [("init", "de", "en"), ("translate", "Haus")],
         )
+
+    def test_google_module_requests_are_given_a_bounded_timeout(self) -> None:
+        calls = []
+
+        class FakeRequests:
+            def get(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                return object()
+
+        module_name = "tests.fake_deep_translator_google"
+        module = ModuleType(module_name)
+        module.requests = FakeRequests()
+        sys.modules[module_name] = module
+
+        class FakeGoogleTranslator:
+            pass
+
+        FakeGoogleTranslator.__module__ = module_name
+        try:
+            translation._configure_google_timeout(FakeGoogleTranslator)
+            module.requests.get("https://example.test")
+        finally:
+            sys.modules.pop(module_name, None)
+
+        self.assertEqual(calls[0][1]["timeout"], (4, 8))
 
 
 if __name__ == "__main__":

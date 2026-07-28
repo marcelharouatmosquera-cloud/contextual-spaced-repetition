@@ -362,6 +362,16 @@ class WebTests(unittest.TestCase):
         self.assertIn("lookup.disabled = selectedUnknownTargets().length === 0", html)
         self.assertNotIn("lookup.disabled = translation.hidden", html)
 
+    def test_automatic_translation_has_timeout_and_retry_fallback(self) -> None:
+        html = render_task_html(self._task())
+
+        self.assertIn('id="retry-sentence-translation"', html)
+        self.assertIn("Automatic translation timed out", html)
+        self.assertIn("}, 15000);", html)
+        self.assertIn("showSentenceTranslationFailure", html)
+        self.assertIn("retrySentenceTranslation.addEventListener", html)
+        self.assertIn("requestId === sentenceTranslationRequest", html)
+
     def test_message_can_render_multiple_action_buttons(self) -> None:
         html = render_message_html(
             "No matching sentence",

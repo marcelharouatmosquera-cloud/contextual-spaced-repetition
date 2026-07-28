@@ -312,6 +312,36 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog.active_task.translation, "The house.")
         self.assertIn('["sentence", 0, "Das Haus.", "The house.", ""]', scripts[0])
 
+    def test_automatic_sentence_translation_reports_background_timeout(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config({"language": "ru", "native_language": "en"})
+        dialog.active_task = ReviewTask(9, "ru", "Какими навыками?", None, [], {})
+        scripts = []
+        dialog.web = SimpleNamespace(eval=scripts.append)
+
+        class ImmediateTaskman:
+            def run_in_background(self, work, done) -> None:
+                future = Future()
+                try:
+                    future.set_result(work())
+                except Exception as exc:
+                    future.set_exception(exc)
+                done(future)
+
+        dialog.mw = SimpleNamespace(taskman=ImmediateTaskman())
+        from contextual_review import translation
+
+        original = translation.translate_text
+        try:
+            translation.translate_text = lambda *args: (_ for _ in ()).throw(
+                TimeoutError("request timed out")
+            )
+            dialog._request_translation("Какими навыками?", "sentence", 4)
+        finally:
+            translation.translate_text = original
+
+        self.assertIn("Automatic translation timed out", scripts[0])
+
     def test_submit_only_suppresses_known_cards_in_current_window(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog.active_task = ReviewTask(

@@ -980,6 +980,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         sentence_id = active_task.sentence_id
         source_language = active_task.language or self.config.language
         target_language = self.config.native_language or "en"
+        started_at = time.perf_counter()
+        append_debug_log(
+            "translation_request_start",
+            kind=translation_kind,
+            request_id=numeric_request_id,
+            sentence_id=sentence_id,
+            source_language=source_language,
+            target_language=target_language,
+            character_count=len(value),
+        )
 
         def translate() -> str:
             from .translation import translate_text
@@ -989,6 +999,13 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         def done(future: Any) -> None:
             current_task = self.active_task
             if current_task is None or current_task.sentence_id != sentence_id:
+                append_debug_log(
+                    "translation_request_stale",
+                    kind=translation_kind,
+                    request_id=numeric_request_id,
+                    sentence_id=sentence_id,
+                    elapsed_ms=round((time.perf_counter() - started_at) * 1000, 1),
+                )
                 return
             try:
                 translated = str(future.result() or "").strip()
@@ -998,6 +1015,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 error = _friendly_translation_error(exc)
             if translation_kind == "sentence" and translated:
                 self.active_task = replace(current_task, translation=translated)
+            append_debug_log(
+                "translation_request_done",
+                kind=translation_kind,
+                request_id=numeric_request_id,
+                sentence_id=sentence_id,
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000, 1),
+                succeeded=bool(translated and not error),
+                error=error,
+            )
             self._notify_translation_finished(
                 translation_kind,
                 numeric_request_id,
@@ -1029,6 +1055,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             error = _friendly_translation_error(exc)
         if translation_kind == "sentence" and translated and self.active_task is not None:
             self.active_task = replace(self.active_task, translation=translated)
+        append_debug_log(
+            "translation_request_done",
+            kind=translation_kind,
+            request_id=numeric_request_id,
+            sentence_id=sentence_id,
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 1),
+            succeeded=bool(translated and not error),
+            error=error,
+        )
         self._notify_translation_finished(
             translation_kind,
             numeric_request_id,
@@ -1271,6 +1306,8 @@ def _friendly_translation_error(exc: Exception) -> str:
     message = str(exc or "").strip()
     if "bundled deep-translator" in message:
         return message
+    if "timed out" in message.casefold() or "timeout" in type(exc).__name__.casefold():
+        return "Automatic translation timed out. Check your internet connection, then retry."
     return "Translation unavailable. Check your internet connection."
 
 
