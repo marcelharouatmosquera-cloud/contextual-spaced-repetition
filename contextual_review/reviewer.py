@@ -92,6 +92,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._mining_undo_markers: List[AnkiUndoMarker] = []
         self._mined_card_ids_by_undo_step: Dict[int, Tuple[int, ...]] = {}
         self._queued_mined_due_card_batches: List[Tuple[DueCard, ...]] = []
+        self._pending_mined_scan_complete = False
         self._session_results: List[Tuple[int, int]] = []
         self._session_forgotten_words: List[List[str]] = []
         self._session_reviewed_card_notes: List[Dict[int, int]] = []
@@ -164,6 +165,9 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         if self._started:
             return
         self._started = True
+        self._queue_pending_mined_notes_for_review()
+        if self._load_queued_mined_task():
+            return
         self._load_next_task()
 
     def _load_next_task(self, refresh_due_cards: bool = False) -> None:
@@ -827,6 +831,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                         self._mining_undo_markers = markers
                     markers.append(marker)
                 queued_card_ids = self._queue_mined_note_for_review(result)
+                append_debug_log(
+                    "mined_note_created",
+                    note_id=int(result.note_id),
+                    card_ids=list(result.card_ids),
+                    queued_card_ids=list(queued_card_ids),
+                    include_new_cards=bool(
+                        getattr(self.config, "include_new_cards", False)
+                    ),
+                )
                 if marker is not None:
                     mapping = getattr(self, "_mined_card_ids_by_undo_step", None)
                     if mapping is None:
@@ -914,6 +927,12 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return ()
         generated_card_ids = set(card_ids)
+        recognition_candidates = [
+            card
+            for card in candidates
+            if str(card.direction or "").strip().casefold() != "recall"
+        ]
+        candidates = recognition_candidates or candidates
         selected_card_id = next(
             (
                 int(card.card_id)
@@ -935,6 +954,71 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._queued_mined_due_card_batches = batches
         batches.append(batch)
         return (selected_card_id,)
+
+    def _queue_pending_mined_notes_for_review(self) -> Tuple[int, ...]:
+        """Recover unintroduced mined recognition cards after closing/restarting."""
+        if bool(getattr(self, "_pending_mined_scan_complete", False)):
+            return ()
+        self._pending_mined_scan_complete = True
+        if bool(getattr(self.config, "include_new_cards", False)):
+            return ()
+
+        scan_limit = max(200, int(getattr(self.config, "max_due_cards", 20) or 20))
+        forced_config = replace(
+            self.config,
+            custom_search_query="tag:mined-word is:new",
+            include_due_cards=False,
+            include_new_cards=True,
+            include_learning_cards=False,
+            future_due_days=0,
+            max_due_cards=scan_limit,
+            max_new_cards=scan_limit,
+        )
+        try:
+            candidates = list(collect_due_cards(self.mw, forced_config))
+        except Exception as exc:
+            append_debug_log("pending_mined_scan_error", error=str(exc))
+            return ()
+
+        # If the recognition card was already introduced, its remaining New
+        # recall sibling must not be mistaken for another pending introduction.
+        recognition_candidates = [
+            card
+            for card in candidates
+            if str(card.direction or "").strip().casefold() != "recall"
+        ]
+        existing_batches = getattr(self, "_queued_mined_due_card_batches", [])
+        existing_card_ids = {
+            int(card.card_id)
+            for batch in existing_batches
+            for card in batch
+        }
+        grouped: Dict[int, List[DueCard]] = {}
+        card_note_ids: Dict[int, int] = {}
+        for card in recognition_candidates:
+            card_id = int(card.card_id)
+            if card_id in existing_card_ids:
+                continue
+            grouped.setdefault(card_id, []).append(card)
+            card_note_ids[card_id] = int(card.note_id or 0)
+
+        queued_ids: List[int] = []
+        queued_note_ids: Set[int] = set()
+        for card_id, batch in grouped.items():
+            note_id = card_note_ids.get(card_id, 0)
+            if note_id and note_id in queued_note_ids:
+                continue
+            existing_batches.append(tuple(batch))
+            queued_ids.append(card_id)
+            if note_id:
+                queued_note_ids.add(note_id)
+        self._queued_mined_due_card_batches = existing_batches
+        append_debug_log(
+            "pending_mined_scan",
+            candidate_card_ids=sorted(grouped),
+            queued_card_ids=queued_ids,
+        )
+        return tuple(queued_ids)
 
     def _load_queued_mined_task(self) -> bool:
         batches = getattr(self, "_queued_mined_due_card_batches", [])

@@ -202,8 +202,11 @@ are never mixed into the same sentence. This first appearance is an
 introduction: reveal the meaning and press `Start Learning`. The exact card is
 answered Again through Anki so it enters its first learning step; normal
 Again/Good grading begins on later appearances. The introduction is not counted
-as a forgotten word. A confirmation banner reports the word and generated-card
-count, and Ctrl+Z immediately removes the new note.
+as a forgotten word. If the window or Anki closes first, the next Contextual
+Review session recovers pending New recognition cards tagged `mined-word` and
+shows their introductions before ordinary due work. A confirmation banner
+reports the word and generated-card count, and Ctrl+Z immediately removes the
+new note.
 
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.

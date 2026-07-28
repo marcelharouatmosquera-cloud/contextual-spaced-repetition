@@ -172,12 +172,26 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog._started = False
         loads = []
+        dialog._queue_pending_mined_notes_for_review = lambda: loads.append("scan")
+        dialog._load_queued_mined_task = lambda: False
         dialog._load_next_task = lambda: loads.append("load")
 
         dialog.start()
         dialog.start()
 
-        self.assertEqual(loads, ["load"])
+        self.assertEqual(loads, ["scan", "load"])
+
+    def test_start_shows_recovered_mined_card_before_normal_due_work(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog._started = False
+        calls = []
+        dialog._queue_pending_mined_notes_for_review = lambda: calls.append("scan")
+        dialog._load_queued_mined_task = lambda: calls.append("mined") or True
+        dialog._load_next_task = lambda: calls.append("normal")
+
+        dialog.start()
+
+        self.assertEqual(calls, ["scan", "mined"])
 
     def test_external_links_only_allow_http_urls_with_a_host(self) -> None:
         self.assertTrue(_is_safe_external_url("https://example.com/dictionary?q=word"))
@@ -301,6 +315,67 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         self.assertEqual(queued, ())
         self.assertEqual(dialog._queued_mined_due_card_batches, [])
+
+    def test_pending_mined_recognition_cards_are_recovered_once(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.config = normalize_config(
+            {
+                "include_new_cards": False,
+                "included_card_templates": ["Card 1"],
+                "recall_templates": ["Card 2"],
+            }
+        )
+        dialog.mw = object()
+        dialog._pending_mined_scan_complete = False
+        dialog._queued_mined_due_card_batches = []
+        candidates = [
+            DueCard(
+                card_id=20,
+                target_word="lernen",
+                lemma="lernen",
+                direction="recognition",
+                note_id=99,
+            ),
+            DueCard(
+                card_id=20,
+                target_word="lerne",
+                lemma="lernen",
+                direction="recognition",
+                note_id=99,
+            ),
+            DueCard(
+                card_id=21,
+                target_word="lernen",
+                lemma="lernen",
+                direction="recall",
+                note_id=99,
+            ),
+            DueCard(
+                card_id=30,
+                target_word="arbeiten",
+                lemma="arbeiten",
+                direction="recognition",
+                note_id=100,
+            ),
+        ]
+        captured = []
+        original = reviewer.collect_due_cards
+        reviewer.collect_due_cards = lambda mw, config: captured.append(config) or candidates
+        try:
+            first = dialog._queue_pending_mined_notes_for_review()
+            second = dialog._queue_pending_mined_notes_for_review()
+        finally:
+            reviewer.collect_due_cards = original
+
+        self.assertEqual(first, (20, 30))
+        self.assertEqual(second, ())
+        self.assertEqual(
+            [[card.card_id for card in batch] for batch in dialog._queued_mined_due_card_batches],
+            [[20, 20], [30]],
+        )
+        self.assertEqual(captured[0].custom_search_query, "tag:mined-word is:new")
+        self.assertTrue(captured[0].include_new_cards)
+        self.assertFalse(captured[0].include_due_cards)
 
     def test_queued_mined_card_becomes_the_only_next_selection_batch(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
