@@ -53,6 +53,17 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         self.assertEqual(spoken, [True])
 
+    def test_web_load_finished_starts_bridge_ready_page_work(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        scripts = []
+        dialog.web = SimpleNamespace(eval=scripts.append)
+
+        dialog._on_web_load_finished(False)
+        dialog._on_web_load_finished(True)
+
+        self.assertEqual(len(scripts), 1)
+        self.assertIn("window.contextualPageReady", scripts[0])
+
     def test_rendering_recall_task_prepares_audio_without_playing(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog.config = normalize_config({"autoplay_sentence_tts": True})

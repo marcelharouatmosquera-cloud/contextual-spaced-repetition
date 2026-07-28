@@ -186,9 +186,6 @@ function setup() {
     speakSentence.setAttribute("aria-disabled", "true");
     ttsStatus.textContent = "Available after Show Solution";
   }
-  if (!sentenceTranslation) {
-    requestAutomaticSentenceTranslation();
-  }
   syncReviewControls();
 }
 
@@ -264,6 +261,16 @@ function showSentenceTranslationFailure(message) {
 }
 
 retrySentenceTranslation.addEventListener("click", requestAutomaticSentenceTranslation);
+
+window.contextualPageReady = () => {
+  if (!sentenceTranslation && sentenceTranslationRequest === 0) {
+    requestAutomaticSentenceTranslation();
+  }
+};
+
+window.addEventListener("load", () => {
+  window.setTimeout(window.contextualPageReady, 50);
+}, { once: true });
 
 function renderTargetWords() {
   const words = Array.isArray(task.targetWords) ? task.targetWords : [];

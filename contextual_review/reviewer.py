@@ -112,6 +112,10 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
         self.web = AnkiWebView()
         self.web.set_bridge_command(self._on_bridge_command, self)
+        try:
+            self.web.loadFinished.connect(self._on_web_load_finished)
+        except (AttributeError, RuntimeError):
+            pass
         self._dialog.finished.connect(self._on_dialog_finished)
 
         layout = QVBoxLayout()
@@ -896,6 +900,18 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             # The background selection callback may finish after the dialog
             # has already been closed and its Qt webview deleted.
             return
+
+    def _on_web_load_finished(self, loaded: bool = True) -> None:
+        """Start page work only after Anki's JavaScript bridge is ready."""
+        if not loaded:
+            return
+        try:
+            self.web.eval(
+                "if (typeof window.contextualPageReady === 'function') { "
+                "window.contextualPageReady(); }"
+            )
+        except (AttributeError, RuntimeError):
+            pass
 
     def _dark_mode(self) -> bool:
         return _is_dark_mode(self.mw)

@@ -374,6 +374,9 @@ class WebTests(unittest.TestCase):
         self.assertIn("showSentenceTranslationFailure", html)
         self.assertIn("retrySentenceTranslation.addEventListener", html)
         self.assertIn("requestId === sentenceTranslationRequest", html)
+        self.assertIn("window.contextualPageReady", html)
+        self.assertIn('window.addEventListener("load"', html)
+        self.assertIn("sentenceTranslationRequest === 0", html)
 
     def test_message_can_render_multiple_action_buttons(self) -> None:
         html = render_message_html(
