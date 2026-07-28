@@ -351,7 +351,9 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.select_review_task = original
 
         self.assertEqual(calls, [(set(), {7})])
-        self.assertEqual(rendered, [task])
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(rendered[0].sentence_id, task.sentence_id)
+        self.assertTrue(rendered[0].is_mined_introduction)
 
     def test_undo_removes_the_mined_card_from_the_follow_up_queue(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -551,6 +553,59 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog.answered_card_ids, set())
         self.assertEqual(dialog.learning_card_ids, {10})
         self.assertEqual(dialog.review_history[0][1], [10])
+
+    def test_mined_introduction_forces_only_its_exact_card_to_again(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.active_task = ReviewTask(
+            sentence_id=1,
+            language="de",
+            full_text="Wir lernen.",
+            translation="We learn.",
+            tokens=[],
+            card_ids_by_key={"lernen": [20]},
+            target_words=(TargetWordDefinition(20, "lernen", "to learn"),),
+            is_mined_introduction=True,
+        )
+        dialog.mw = object()
+        dialog.config = normalize_config({})
+        dialog.answered_card_ids = set()
+        dialog.learning_card_ids = set()
+        dialog.today_goal_card_ids = {20}
+        dialog.review_history = []
+        dialog._session_results = []
+        dialog._session_forgotten_words = []
+        dialog._queued_mined_due_card_batches = []
+        dialog.web = SimpleNamespace(eval=lambda _script: None)
+        loads = []
+        dialog._load_next_task = lambda refresh_due_cards=False: loads.append(
+            refresh_due_cards
+        )
+
+        captured = []
+        original = reviewer.answer_review_task
+        try:
+            def answer(*args, **kwargs):
+                captured.append((tuple(args[2]), list(kwargs["unknown_card_ids"])))
+                return SimpleNamespace(
+                    answered_card_ids=[20],
+                    unknown_card_ids=[20],
+                    known_card_ids=[],
+                    completed_card_ids=[],
+                    learning_card_ids=[20],
+                )
+
+            reviewer.answer_review_task = answer
+            dialog._submit_answer([], [])
+        finally:
+            reviewer.answer_review_task = original
+
+        self.assertEqual(captured, [((), [20])])
+        self.assertEqual(dialog.answered_card_ids, set())
+        self.assertEqual(dialog.learning_card_ids, {20})
+        self.assertEqual(dialog.review_history[0][1], [20])
+        self.assertEqual(dialog._session_results, [(0, 0)])
+        self.assertEqual(dialog._session_forgotten_words, [[]])
+        self.assertEqual(loads, [True])
 
     def test_undo_restores_previous_contextual_sentence(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)

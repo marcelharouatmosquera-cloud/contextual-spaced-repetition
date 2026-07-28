@@ -198,8 +198,12 @@ Mined notes receive the `mined-word` tag. When `Learn New Cards` is disabled,
 the new word is still queued once inside Contextual Review by its exact card ID.
 After the current sentence is graded, it gets a sentence containing only that
 new card; unrelated New cards remain disabled. Recognition and recall siblings
-are never mixed into the same sentence. A confirmation banner reports the word
-and generated-card count, and Ctrl+Z immediately removes the new note.
+are never mixed into the same sentence. This first appearance is an
+introduction: reveal the meaning and press `Start Learning`. The exact card is
+answered Again through Anki so it enters its first learning step; normal
+Again/Good grading begins on later appearances. The introduction is not counted
+as a forgotten word. A confirmation banner reports the word and generated-card
+count, and Ctrl+Z immediately removes the new note.
 
 You can also press `Space` or `Enter` to reveal the solution, then press it
 again to submit. Number keys `1` to `9` toggle the first nine target words.

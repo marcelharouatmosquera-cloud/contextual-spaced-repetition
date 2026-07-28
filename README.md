@@ -128,6 +128,10 @@ Anki actually generates, so a forward-and-reverse note normally adds two.
 Every mined note is tagged `mined-word`. If `Learn New Cards` is disabled, the
 add-on queues only the newly mined card for its own contextual sentence after
 the current sentence is graded; it does not open the rest of the New queue.
+That immediate follow-up is an introduction rather than a pass/fail review:
+reveal the meaning and choose `Start Learning`. The add-on answers only that
+exact card as Again through Anki, placing it at its first learning step. Later
+appearances use the normal Again/Good controls.
 A visible success banner confirms the word and card count and explains Ctrl+Z.
 
 Clicked target cards are answered as `Again`. Unclicked target cards are

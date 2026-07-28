@@ -83,6 +83,7 @@ class ReviewTask:
     card_ids_by_key: Dict[str, List[int]]
     target_words: Tuple[TargetWordDefinition, ...] = ()
     matching_mode: str = "exact_form"
+    is_mined_introduction: bool = False
 
     @property
     def task_type(self) -> str:

@@ -449,6 +449,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return
 
+        if bool(getattr(self, "_due_cards_cache_is_mined", False)):
+            task = replace(task, is_mined_introduction=True)
         self.active_task = task
         self._mark_sentence_shown(task.sentence_id)
         self._render_task(task)
@@ -515,6 +517,22 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._load_next_task()
             return
 
+        is_mined_introduction = bool(
+            getattr(self.active_task, "is_mined_introduction", False)
+        )
+        if is_mined_introduction:
+            # The immediate mined-word follow-up is an introduction, not a
+            # meaningful memory test. Start only its exact card at Anki's first
+            # learning step through the normal Again grading path.
+            unknown_keys = ()
+            unknown_card_ids = sorted(
+                {
+                    int(card_id)
+                    for card_ids in self.active_task.card_ids_by_key.values()
+                    for card_id in card_ids
+                }
+            )
+
         try:
             summary = answer_review_task(
                 self.mw,
@@ -571,13 +589,19 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         if session_results is None:
             session_results = []
             self._session_results = session_results
-        session_results.append((len(summary.known_card_ids), len(summary.unknown_card_ids)))
-        forgotten_words = [
-            str(item.target_word or "").strip()
-            for item in (self.active_task.target_words or ())
-            if item.card_id in set(summary.unknown_card_ids)
-            and str(item.target_word or "").strip()
-        ]
+        if is_mined_introduction:
+            session_results.append((0, 0))
+            forgotten_words = []
+        else:
+            session_results.append(
+                (len(summary.known_card_ids), len(summary.unknown_card_ids))
+            )
+            forgotten_words = [
+                str(item.target_word or "").strip()
+                for item in (self.active_task.target_words or ())
+                if item.card_id in set(summary.unknown_card_ids)
+                and str(item.target_word or "").strip()
+            ]
         session_forgotten_words = getattr(self, "_session_forgotten_words", None)
         if session_forgotten_words is None:
             session_forgotten_words = []

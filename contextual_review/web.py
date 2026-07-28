@@ -31,6 +31,7 @@ def render_task_html(
         "matchingMode": task.matching_mode,
         "taskType": task_type,
         "hasRecall": has_recall,
+        "isMinedIntroduction": bool(task.is_mined_introduction),
     }
     payload_json = _script_json(payload)
     sentence_html = _render_sentence_tokens(task.tokens, theme)
@@ -150,6 +151,7 @@ function setup() {
   forceReadable(questionTranslation, textColor);
   forceReadable(solution, textColor);
   reviewGuidance.textContent = guidanceText();
+  submit.textContent = Boolean(task.isMinedIntroduction) ? "Start Learning" : "Grade & Next";
   document.querySelectorAll(".word").forEach((span) => {
     forceReadable(span, textColor);
   });
@@ -193,6 +195,9 @@ function setup() {
 }
 
 function guidanceText() {
+  if (Boolean(task.isMinedIntroduction)) {
+    return "Newly mined word: read it in context, reveal the meaning, then start its first learning step.";
+  }
   if (task.taskType === "mixed") {
     return "Recall each blank and read the highlighted words, then show the solution.";
   }
@@ -203,10 +208,20 @@ function guidanceText() {
 }
 
 function targetCanBeMarked(span) {
+  if (Boolean(task.isMinedIntroduction)) {
+    return false;
+  }
   return !span.classList.contains("recall-blank") || span.dataset.revealed === "true";
 }
 
 function configureTargetAccessibility(span) {
+  if (Boolean(task.isMinedIntroduction)) {
+    span.tabIndex = -1;
+    span.setAttribute("role", "note");
+    span.removeAttribute("aria-pressed");
+    span.setAttribute("aria-label", `Newly mined word: ${span.textContent}`);
+    return;
+  }
   if (!targetCanBeMarked(span)) {
     const hint = (span.dataset.hint || "").trim();
     span.tabIndex = -1;
@@ -290,7 +305,9 @@ function renderTargetWords() {
     details.className = "target-details";
     fieldList.className = "solution-fields";
     schedule.className = "target-schedule";
-    schedule.textContent = scheduleText(item);
+    schedule.textContent = Boolean(task.isMinedIntroduction)
+      ? "(starts at the first learning step)"
+      : scheduleText(item);
     details.appendChild(word);
     if (schedule.textContent) {
       details.appendChild(document.createTextNode(" "));
@@ -307,7 +324,9 @@ function renderTargetWords() {
       toggleUnknownForCardId(marker.dataset.cardId);
     });
     row.appendChild(details);
-    row.appendChild(marker);
+    if (!Boolean(task.isMinedIntroduction)) {
+      row.appendChild(marker);
+    }
     targetWords.appendChild(row);
   });
   syncTargetWordButtons();
@@ -901,6 +920,12 @@ function syncLookupState() {
 }
 
 function syncSelectionSummary() {
+  if (Boolean(task.isMinedIntroduction)) {
+    selectionSummary.textContent = solution.hidden
+      ? "Introduction - Space/Enter to show the meaning"
+      : "Start the first learning step - Space/Enter to continue";
+    return;
+  }
   const targets = Array.from(document.querySelectorAll(".word.target"));
   const hiddenRecallTargets = targets.filter((node) => !targetCanBeMarked(node));
   if (hiddenRecallTargets.length) {

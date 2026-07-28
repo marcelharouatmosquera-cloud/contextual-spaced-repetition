@@ -92,6 +92,32 @@ class WebTests(unittest.TestCase):
         self.assertIn('action: "speak_sentence"', html)
         self.assertIn("contextualTtsFinished", html)
 
+    def test_mined_follow_up_is_rendered_as_a_learning_introduction(self) -> None:
+        source = self._task()
+        task = ReviewTask(
+            sentence_id=source.sentence_id,
+            language=source.language,
+            full_text=source.full_text,
+            translation=source.translation,
+            tokens=source.tokens,
+            card_ids_by_key=source.card_ids_by_key,
+            target_words=source.target_words,
+            matching_mode=source.matching_mode,
+            is_mined_introduction=True,
+        )
+
+        html = render_task_html(task)
+        payload_match = re.search(r"const task = (\{.*?\});\n", html)
+
+        self.assertIsNotNone(payload_match)
+        payload = json.loads(payload_match.group(1))
+        self.assertTrue(payload["isMinedIntroduction"])
+        self.assertIn("Newly mined word: read it in context", html)
+        self.assertIn('? "Start Learning" : "Grade & Next"', html)
+        self.assertIn("starts at the first learning step", html)
+        self.assertIn("Introduction - Space/Enter to show the meaning", html)
+        self.assertIn("if (!Boolean(task.isMinedIntroduction))", html)
+
     def test_task_payload_escapes_script_end_tags(self) -> None:
         task = ReviewTask(
             sentence_id=3,
