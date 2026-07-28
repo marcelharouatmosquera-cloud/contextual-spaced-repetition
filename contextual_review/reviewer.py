@@ -19,6 +19,7 @@ from .web import render_message_html, render_task_html
 
 RECENT_SENTENCE_HISTORY_PATH = Path("user_files") / "recent_sentence_history.json"
 RECENT_SENTENCE_LIMIT = 200
+SIBLING_NOTE_GAP_SENTENCES = 2
 DEFAULT_REVIEW_WINDOW_SIZE = (1200, 760)
 REVIEW_WINDOW_SCREEN_FRACTION = (0.92, 0.88)
 
@@ -93,6 +94,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._queued_mined_due_card_batches: List[Tuple[DueCard, ...]] = []
         self._session_results: List[Tuple[int, int]] = []
         self._session_forgotten_words: List[List[str]] = []
+        self._session_reviewed_card_notes: List[Dict[int, int]] = []
         self._session_summary_shown = False
         # Sentences displaced by Previous are resumed in order after the
         # restored reviews are graded again. They have already been selected
@@ -239,6 +241,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             due_cards = [
                 card for card in collected_due_cards if card.card_id not in hidden_card_ids
             ]
+            spaced_due_cards = _defer_recent_sibling_due_cards(
+                due_cards,
+                getattr(self, "_session_reviewed_card_notes", []),
+            )
+            sibling_spacing_deferred_card_ids = sorted(
+                {int(card.card_id) for card in due_cards}
+                - {int(card.card_id) for card in spaced_due_cards}
+            )
+            due_cards = spaced_due_cards
             append_debug_log(
                 "review_window_due_filter",
                 collected_target_count=len(collected_due_cards),
@@ -246,6 +257,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 collected_card_ids=sorted({card.card_id for card in collected_due_cards}),
                 hidden_known_card_ids=sorted(self.answered_card_ids),
                 hidden_cached_reviewed_card_ids=sorted(cached_reviewed_card_ids),
+                sibling_spacing_deferred_card_ids=sibling_spacing_deferred_card_ids,
                 elapsed_ms=round((time.perf_counter() - due_started) * 1000, 1),
                 cache_hit=cache_hit,
             )
@@ -336,6 +348,17 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 "review_task_selection_done",
                 elapsed_ms=round((time.perf_counter() - selection_started) * 1000, 1),
                 sentence_id=task.sentence_id if task is not None else None,
+                matched_card_count=(
+                    len(
+                        {
+                            int(card_id)
+                            for card_ids in task.card_ids_by_key.values()
+                            for card_id in card_ids
+                        }
+                    )
+                    if task is not None
+                    else 0
+                ),
             )
             return task
 
@@ -583,6 +606,13 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 previous_learning,
             )
         )
+        reviewed_card_notes = getattr(self, "_session_reviewed_card_notes", None)
+        if reviewed_card_notes is None:
+            reviewed_card_notes = []
+            self._session_reviewed_card_notes = reviewed_card_notes
+        reviewed_card_notes.append(
+            _card_note_map(self.mw, summary.answered_card_ids)
+        )
         self._notify_progress_changed()
         self._notify_undo_available(True)
         session_results = getattr(self, "_session_results", None)
@@ -683,6 +713,9 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         session_forgotten_words = getattr(self, "_session_forgotten_words", [])
         if session_forgotten_words:
             session_forgotten_words.pop()
+        reviewed_card_notes = getattr(self, "_session_reviewed_card_notes", [])
+        if reviewed_card_notes:
+            reviewed_card_notes.pop()
         if interrupted_task is not None and interrupted_task is not task:
             interrupted_tasks = getattr(self, "_interrupted_tasks", None)
             if interrupted_tasks is None:
@@ -1429,6 +1462,53 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             showInfo(message)
         except Exception:
             pass
+
+def _card_note_map(mw: Any, card_ids: Iterable[Any]) -> Dict[int, int]:
+    collection = getattr(mw, "col", None)
+    get_card = getattr(collection, "get_card", None)
+    if not callable(get_card):
+        return {}
+    mapped: Dict[int, int] = {}
+    for value in card_ids:
+        try:
+            card_id = int(value)
+            card = get_card(card_id)
+            note_id = int(getattr(card, "nid", 0) or 0)
+        except Exception:
+            continue
+        if note_id:
+            mapped[card_id] = note_id
+    return mapped
+
+
+def _defer_recent_sibling_due_cards(
+    due_cards: Iterable[DueCard],
+    reviewed_card_note_batches: Iterable[Dict[int, int]],
+    gap_sentences: int = SIBLING_NOTE_GAP_SENTENCES,
+) -> List[DueCard]:
+    """Put other cards from a recently reviewed note behind unrelated notes."""
+    cards = list(due_cards)
+    gap = max(0, int(gap_sentences))
+    if gap == 0:
+        return cards
+    recent_batches = list(reviewed_card_note_batches)[-gap:]
+    if not cards or not recent_batches:
+        return cards
+
+    def is_recent_sibling(card: DueCard) -> bool:
+        note_id = int(card.note_id or 0)
+        card_id = int(card.card_id)
+        if not note_id:
+            return False
+        for batch in reversed(recent_batches):
+            if note_id not in batch.values():
+                continue
+            return card_id not in batch
+        return False
+
+    preferred = [card for card in cards if not is_recent_sibling(card)]
+    # Never strand a due sibling when it is the only work available.
+    return preferred or cards
 
 
 def _task_has_recall(task: ReviewTask) -> bool:

@@ -54,6 +54,9 @@ Use this before publishing a build to AnkiWeb.
 - For a sentence without a stored translation, confirm translation starts automatically, carries an automatic-translation warning, and hovering a non-target word shows a quick tooltip translation.
 - Mark one target word as unknown, press Next, and confirm the matched card receives `Again`.
 - Leave one target word unmarked, press Next, and confirm the matched card receives `Good`.
+- Confirm the displayed Again/Good times match Anki's native answer-button labels for a New, Learning, and Review card.
+- On a forward/reverse note with sibling burying disabled, confirm the reverse card is separated by two unrelated sentences when available and is still shown when it is the only due work.
+- With two due words sharing a corpus sentence, confirm the greedy selector finds the two-word sentence even when many shorter one-word candidates exist.
 - Use Anki undo immediately after a sentence and confirm the batch answer is reversible.
 - Press Ctrl+Z while the next sentence is still being found and confirm the previous batch and progress bar are restored.
 - Confirm an unavailable/missing card surfaces an error before any review answer is applied.

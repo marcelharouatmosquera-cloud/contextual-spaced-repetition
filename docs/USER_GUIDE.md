@@ -216,7 +216,13 @@ the part of the initial session goal still remaining.
 Contextual Review schedules the linked cards as a batch, so a sentence can
 cover multiple due words without being limited to Anki's next queued card.
 The next sentence is selected greedily: anchor on the most urgent due word,
-then prefer the candidate that covers the most other currently due cards.
+search for anchor sentences containing another due word first, then prefer the
+candidate covering the most currently due cards. If there is no overlap, a
+normal one-word sentence is used. The Again and Good time labels are read from
+Anki's current scheduling states, so learning steps and FSRS intervals are not
+estimated by the add-on. Forward and reverse siblings from one note are kept
+two unrelated sentences apart when possible, but remain available immediately
+if there is nothing else to study.
 Sentences are avoided while the current Contextual Review window remains open,
 and recently shown sentences are also avoided when you close and reopen the
 window. They can still appear again if matching due cards remain and the corpus

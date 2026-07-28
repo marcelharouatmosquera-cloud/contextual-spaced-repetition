@@ -365,6 +365,44 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         self.assertEqual(dialog._queued_mined_due_card_batches, [(kept,)])
 
+    def test_recent_sibling_is_deferred_behind_unrelated_cards(self) -> None:
+        same_card = DueCard(card_id=10, target_word="front", lemma="front", note_id=1)
+        sibling = DueCard(card_id=11, target_word="back", lemma="back", note_id=1)
+        unrelated = DueCard(card_id=20, target_word="other", lemma="other", note_id=2)
+
+        spaced = reviewer._defer_recent_sibling_due_cards(
+            [same_card, sibling, unrelated],
+            [{10: 1}],
+        )
+
+        self.assertEqual([card.card_id for card in spaced], [10, 20])
+
+    def test_recent_sibling_gap_expires_after_two_other_sentences(self) -> None:
+        sibling = DueCard(card_id=11, target_word="back", lemma="back", note_id=1)
+        unrelated = DueCard(card_id=40, target_word="other", lemma="other", note_id=4)
+
+        still_spaced = reviewer._defer_recent_sibling_due_cards(
+            [sibling, unrelated],
+            [{10: 1}, {20: 2}],
+        )
+        expired = reviewer._defer_recent_sibling_due_cards(
+            [sibling, unrelated],
+            [{10: 1}, {20: 2}, {30: 3}],
+        )
+
+        self.assertEqual([card.card_id for card in still_spaced], [40])
+        self.assertEqual([card.card_id for card in expired], [11, 40])
+
+    def test_only_due_sibling_is_not_stranded_by_spacing(self) -> None:
+        sibling = DueCard(card_id=11, target_word="back", lemma="back", note_id=1)
+
+        spaced = reviewer._defer_recent_sibling_due_cards(
+            [sibling],
+            [{10: 1}],
+        )
+
+        self.assertEqual(spaced, [sibling])
+
     def test_grade_failure_screen_has_recovery_actions(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog.active_task = ReviewTask(

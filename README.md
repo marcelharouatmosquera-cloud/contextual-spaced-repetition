@@ -137,7 +137,13 @@ A visible success banner confirms the word and card count and explains Ctrl+Z.
 Clicked target cards are answered as `Again`. Unclicked target cards are
 answered as `Good`. The add-on schedules those linked cards as a contextual
 batch, so a sentence can cover multiple due words without being limited to
-Anki's next queued card. `Ctrl+Z` restores the previous contextual batch.
+Anki's next queued card. It probes for sentences containing the urgent anchor
+plus another due word before falling back to an ordinary one-word match. The
+displayed Again/Good times come directly from Anki's scheduling states instead
+of an estimated interval. Forward and reverse siblings from the same note are
+kept at least two unrelated sentences apart when other work is available; a
+sibling is never stranded when it is the only due card. `Ctrl+Z` restores the
+previous contextual batch.
 While the next sentence is being selected, the current sentence remains on
 screen and Ctrl+Z stays available. The stacked progress bar updates immediately
 after grading or undoing: green is finished for today, orange is waiting in an

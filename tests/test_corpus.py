@@ -479,6 +479,59 @@ class CorpusTests(unittest.TestCase):
             assert task is not None
             self.assertEqual(task.full_text, "Review now.")
 
+    def test_greedy_selection_surfaces_overlap_beyond_anchor_only_fts_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "sentences.db"
+            initialize_database(db_path)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                for index in range(40):
+                    insert_sentence(conn, "en", f"Anchor filler {index}.", None)
+                insert_sentence(
+                    conn,
+                    "en",
+                    "The anchor and companion appear together here.",
+                    None,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            due = [
+                DueCard(
+                    card_id=1,
+                    target_word="anchor",
+                    lemma="anchor",
+                    priority=100.0,
+                ),
+                DueCard(
+                    card_id=2,
+                    target_word="companion",
+                    lemma="companion",
+                    priority=1.0,
+                ),
+            ]
+
+            task = select_review_task(
+                db_path,
+                due,
+                "en",
+                set(),
+                candidate_limit=5,
+                matching_mode="lemma_family",
+            )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(
+                task.full_text,
+                "The anchor and companion appear together here.",
+            )
+            self.assertEqual(
+                {card_id for ids in task.card_ids_by_key.values() for card_id in ids},
+                {1, 2},
+            )
+
     def test_greedy_selection_tries_the_next_anchor_when_urgent_word_has_no_sentence(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             db_path = Path(tempdir) / "sentences.db"

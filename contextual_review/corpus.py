@@ -318,6 +318,7 @@ def select_review_task(
             int(candidate_limit),
             int(query_term_limit),
             is_unsegmented_language(language),
+            overlap_expansions=expansions,
         )
     except sqlite3.OperationalError as exc:
         if "interrupted" in str(exc).lower():
@@ -532,29 +533,12 @@ def _target_words_for_match(
             target_word=card.target_word,
             definition=card.definition,
             solution_fields=card.solution_fields,
-            good_interval=_good_interval_label(card),
-            again_interval="today",
+            good_interval=card.good_interval,
+            again_interval=card.again_interval,
             direction=_due_card_direction(card),
         )
         for card in ordered
     )
-
-
-def _good_interval_label(card: DueCard) -> str:
-    base_interval = max(1, int(card.interval or 0))
-    factor = max(1300, int(card.factor or 2500))
-    growth = max(1, round(base_interval * max(1.3, factor / 1000.0)))
-    days = max(base_interval + 1, growth)
-    return _days_label(days)
-
-
-def _days_label(days: int) -> str:
-    days = max(0, int(days))
-    if days <= 0:
-        return "today"
-    if days == 1:
-        return "1 day"
-    return "%s days" % days
 
 
 def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, int, float, int, float, int, int]:
@@ -577,6 +561,7 @@ def _candidate_rows(
     candidate_limit: int,
     query_term_limit: int,
     include_substring_matches: bool = False,
+    overlap_expansions: Optional[Sequence[QueryExpansion]] = None,
 ) -> List[sqlite3.Row]:
     ranked_expansions = sorted(
         expansions,
@@ -600,6 +585,56 @@ def _candidate_rows(
         ranked_terms.extend((form, False) for form in expansion.forms)
         if expansion.wildcard_prefix:
             ranked_terms.append((expansion.wildcard_prefix, True))
+
+    # The anchor-only FTS ranking naturally favors short sentences and can
+    # bury useful overlaps deep in a large corpus. Probe for anchor + another
+    # due word first, then fill the remaining pool with ordinary anchor hits.
+    anchor_keys = {expansion.base_key for expansion in expansions}
+    other_expansions = sorted(
+        [
+            expansion
+            for expansion in (overlap_expansions or ())
+            if expansion.base_key not in anchor_keys
+        ],
+        key=lambda expansion: (
+            -sum(float(card.priority or 0.0) for card in due_by_lemma[expansion.base_key]),
+            expansion.base_key,
+        ),
+    )
+    other_terms: List[Tuple[str, bool]] = []
+    for expansion in other_expansions:
+        other_terms.extend((form, False) for form in expansion.forms)
+        if expansion.wildcard_prefix:
+            other_terms.append((expansion.wildcard_prefix, True))
+
+    overlap_row_limit = max(candidate_limit * 2, 20)
+    for anchor_index in range(0, len(ranked_terms), chunk_size):
+        anchor_query = build_expanded_match_query(
+            ranked_terms[anchor_index : anchor_index + chunk_size],
+            chunk_size,
+        )
+        if not anchor_query:
+            continue
+        for other_index in range(0, len(other_terms), chunk_size):
+            other_query = build_expanded_match_query(
+                other_terms[other_index : other_index + chunk_size],
+                chunk_size,
+            )
+            if not other_query:
+                continue
+            overlap_query = "(%s) AND (%s)" % (anchor_query, other_query)
+            overlap_rows = conn.execute(
+                _candidate_sql("sentence_forms", "word_form_list", len(languages)),
+                (overlap_query, *languages, overlap_row_limit),
+            ).fetchall()
+            for row in overlap_rows:
+                sentence_id = int(row["id"])
+                if sentence_id in seen_sentence_ids:
+                    continue
+                rows.append(row)
+                seen_sentence_ids.add(sentence_id)
+                if len(rows) >= overlap_row_limit:
+                    return rows
 
     for index in range(0, len(ranked_terms), chunk_size):
         match_query = build_expanded_match_query(ranked_terms[index : index + chunk_size], chunk_size)

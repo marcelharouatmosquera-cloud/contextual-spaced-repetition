@@ -238,6 +238,7 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         seen_keys: Set[str] = set()
         interval = _int_attr(card, "ivl", 0)
         factor = _int_attr(card, "factor", 2500)
+        again_interval, good_interval = _native_interval_labels(mw, card)
         overdue, due_in_days, priority = _due_metrics(card, today)
         is_learning_due = card_id in today_search_card_ids and _card_is_learning(card)
         if is_learning_due:
@@ -275,6 +276,8 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
                     is_learning_due=is_learning_due,
                     direction=direction,
                     note_id=note_id,
+                    good_interval=good_interval,
+                    again_interval=again_interval,
                 )
             )
 
@@ -316,6 +319,31 @@ def collect_due_cards(mw: Any, config: ContextConfig) -> List[DueCard]:
         if card.card_id in today_search_card_ids
     }
     return DueCardCollection(limited_due_cards, eligible_today_card_ids)
+
+
+def _native_interval_labels(mw: Any, card: Any) -> Tuple[str, str]:
+    """Return Anki's real Again/Good labels without estimating intervals."""
+    backend = getattr(getattr(mw, "col", None), "_backend", None)
+    get_states = getattr(backend, "get_scheduling_states", None)
+    describe_states = getattr(backend, "describe_next_states", None)
+    if callable(get_states) and callable(describe_states):
+        try:
+            labels = list(describe_states(get_states(int(card.id))))
+            if len(labels) >= 3:
+                return str(labels[0] or ""), str(labels[2] or "")
+        except Exception:
+            pass
+
+    # Compatibility with older supported Anki builds. It calls the same
+    # scheduler state calculation, but exposes one answer label at a time.
+    scheduler = getattr(getattr(mw, "col", None), "sched", None)
+    next_interval = getattr(scheduler, "nextIvlStr", None)
+    if callable(next_interval):
+        try:
+            return str(next_interval(card, 1) or ""), str(next_interval(card, 3) or "")
+        except Exception:
+            pass
+    return "", ""
 
 
 def _defer_recall_siblings(due_cards: Sequence[DueCard]) -> List[DueCard]:

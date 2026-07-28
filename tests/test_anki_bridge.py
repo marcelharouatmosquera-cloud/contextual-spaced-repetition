@@ -742,6 +742,43 @@ class AnkiBridgeTests(unittest.TestCase):
         self.assertEqual(due_cards[0].target_word, "dom")
         self.assertEqual(due_cards[0].definition, "house")
 
+    def test_collect_due_cards_uses_ankis_native_interval_labels(self) -> None:
+        templates = [{"name": "Recognition", "qfmt": "{{Russian}}", "afmt": "{{English}}"}]
+        note = DirectionNote("дом", "house", templates)
+        card = DirectionCard(1, note, 0)
+        collection = DirectionCollection([card])
+
+        class PreviewBackend:
+            def __init__(self) -> None:
+                self.requested = []
+
+            def get_scheduling_states(self, card_id):
+                self.requested.append(card_id)
+                return "native states"
+
+            def describe_next_states(self, states):
+                self.assert_state = states
+                return ["10m", "15m", "7d", "12d"]
+
+        backend = PreviewBackend()
+        collection._backend = backend
+        config = normalize_config(
+            {
+                "target_field": "Russian",
+                "dictionary_field": "English",
+                "language": "ru",
+                "custom_search_query": "is:due",
+                "require_target_on_question": True,
+            }
+        )
+
+        due_cards = collect_due_cards(FakeMw(collection), config)
+
+        self.assertEqual(backend.requested, [1])
+        self.assertEqual(backend.assert_state, "native states")
+        self.assertEqual(due_cards[0].again_interval, "10m")
+        self.assertEqual(due_cards[0].good_interval, "7d")
+
     def test_collect_due_cards_displays_full_target_field_but_matches_content_word(self) -> None:
         templates = [{"name": "Recognition", "qfmt": "{{German}}", "afmt": "{{English}}"}]
         note = FlexibleNote({"German": "der Monat", "English": "month"}, templates)

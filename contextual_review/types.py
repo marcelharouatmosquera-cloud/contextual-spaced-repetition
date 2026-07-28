@@ -33,6 +33,8 @@ class DueCard:
     is_learning_due: bool = False
     direction: str = "recognition"
     note_id: int = 0
+    good_interval: str = ""
+    again_interval: str = ""
 
 
 @dataclass(frozen=True)
