@@ -38,6 +38,11 @@ def setup(addon_name: str) -> None:
 
         show_favorite_sentences_dialog(mw, addon_name)
 
+    def on_recent_sentences() -> None:
+        from .dialogs import show_recent_sentences_dialog
+
+        show_recent_sentences_dialog(mw, addon_name)
+
     def on_instructions() -> None:
         from .dialogs import show_instructions_dialog
 
@@ -54,6 +59,7 @@ def setup(addon_name: str) -> None:
     for item in (
         ("Start Review", on_triggered),
         ("Favorite Sentences", on_favorites),
+        ("Last 100 Sentences", on_recent_sentences),
         None,
         ("Settings", on_settings),
         ("Quick Guide", on_instructions),

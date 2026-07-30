@@ -258,21 +258,56 @@ class NoteCreationTests(unittest.TestCase):
             ],
         )
 
-    def test_duplicate_mined_word_is_rejected_before_an_undo_entry(self):
+    def test_duplicate_new_mined_word_is_reused_and_moved_to_front(self):
         mw = self._mw()
         existing = FakeNote(mw.col.word_notetype)
         existing.id = 77
         existing["German"] = "Hund"
         mw.col.notes[77] = existing
+        mw.col.generated_cards[77] = (771, 772)
         mw.col.search_results = [77]
         task = ReviewTask(1, "de", "Der Hund.", None, [], {"hund": [10]})
         config = normalize_config(
             {"target_field": "German", "dictionary_field": "English"}
         )
 
-        with self.assertRaisesRegex(ValueError, "already exists"):
-            create_mined_note(mw, task, "Hund", "dog", config)
+        result = create_mined_note(mw, task, "Hund", "dog", config)
 
+        self.assertFalse(result.created)
+        self.assertTrue(result.repositioned_existing)
+        self.assertTrue(result.undoable)
+        self.assertEqual(result.note_id, 77)
+        self.assertEqual(result.card_ids, (771, 772))
+        self.assertEqual(mw.col.undo_labels, ["Move Existing Contextual Note to Front"])
+        self.assertEqual(mw.col.merged, [42])
+        self.assertEqual(mw.col.sched.repositioned[0]["card_ids"], [771, 772])
+        self.assertEqual(mw.col.added, [])
+
+    def test_duplicate_studied_word_keeps_its_existing_schedule(self):
+        mw = self._mw()
+        existing = FakeNote(mw.col.word_notetype)
+        existing.id = 77
+        existing["German"] = "Hund"
+        mw.col.notes[77] = existing
+        mw.col.generated_cards[77] = (771, 772)
+        mw.col.search_results = [77]
+        original_get_card = mw.col.get_card
+        mw.col.get_card = lambda card_id: (
+            original_get_card(card_id)
+            if card_id == 10
+            else SimpleNamespace(id=card_id, queue=2)
+        )
+        task = ReviewTask(1, "de", "Der Hund.", None, [], {"hund": [10]})
+        config = normalize_config(
+            {"target_field": "German", "dictionary_field": "English"}
+        )
+
+        result = create_mined_note(mw, task, "Hund", "dog", config)
+
+        self.assertFalse(result.created)
+        self.assertFalse(result.repositioned_existing)
+        self.assertFalse(result.undoable)
+        self.assertEqual(mw.col.sched.repositioned, [])
         self.assertEqual(mw.col.undo_labels, [])
         self.assertEqual(mw.col.added, [])
 

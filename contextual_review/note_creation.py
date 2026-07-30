@@ -23,6 +23,9 @@ class MiningResult:
     card_ids: Tuple[int, ...]
     audio_added: bool
     new_limit_increase: int
+    created: bool = True
+    repositioned_existing: bool = False
+    undoable: bool = True
 
 
 @dataclass(frozen=True)
@@ -62,8 +65,11 @@ def create_mined_note(
     solution_field = _solution_field(field_names, config, target_field)
     if not solution_field:
         raise RuntimeError("The active note type has no configured translation field.")
-    if _note_already_exists(col, notetype, deck_id, target_field, target_word):
-        raise ValueError("Note already exists!")
+    existing_note = _find_existing_note(
+        col, notetype, deck_id, target_field, target_word
+    )
+    if existing_note is not None:
+        return _reuse_existing_note(mw, existing_note, deck_id, config)
 
     escaped_target = html.escape(target_word)
     note[target_field] = escaped_target
@@ -372,13 +378,13 @@ def _field_label_key(value: str) -> str:
     return re.sub(r"[\W_]+", "", str(value or "").casefold(), flags=re.UNICODE)
 
 
-def _note_already_exists(
+def _find_existing_note(
     col: Any,
     notetype: Dict[str, Any],
     deck_id: int,
     target_field: str,
     target_word: str,
-) -> bool:
+) -> Optional[Any]:
     finder = getattr(col, "find_notes", None)
     if not callable(finder):
         raise RuntimeError("This Anki version does not expose the native note search API.")
@@ -394,10 +400,69 @@ def _note_already_exists(
         try:
             existing = col.get_note(note_id)
             if _plain_text(existing[target_field]).casefold() == expected:
-                return True
+                return existing
         except Exception:
             continue
-    return False
+    return None
+
+
+def _reuse_existing_note(
+    mw: Any,
+    note: Any,
+    deck_id: int,
+    config: ContextConfig,
+) -> MiningResult:
+    """Move an existing note's New cards forward without resetting studied cards."""
+    col = _collection(mw)
+    note_id = int(getattr(note, "id", 0) or 0)
+    if not note_id:
+        raise RuntimeError("Anki returned an existing note without an ID.")
+    card_ids = tuple(int(card_id) for card_id in col.card_ids_of_note(note_id))
+    new_card_ids = tuple(
+        card_id
+        for card_id in card_ids
+        if int(getattr(col.get_card(card_id), "queue", -1)) == 0
+    )
+    if not new_card_ids:
+        return MiningResult(
+            note_id,
+            card_ids,
+            False,
+            0,
+            created=False,
+            repositioned_existing=False,
+            undoable=False,
+        )
+
+    new_limit_increase = 0
+    if config.increase_new_limit_after_mining:
+        new_limit_increase = len(new_card_ids)
+        _adjust_today_new_limit(col, deck_id, new_limit_increase)
+
+    undo_entry = _begin_undo(col, "Move Existing Contextual Note to Front")
+    try:
+        _reposition_new_cards_first(col, new_card_ids)
+        _merge_undo(col, undo_entry)
+    except Exception:
+        _rollback_undo(col)
+        if new_limit_increase:
+            try:
+                _adjust_today_new_limit(col, deck_id, -new_limit_increase)
+            except Exception:
+                pass
+        raise
+
+    _refresh(mw)
+    _update_undo_actions(mw)
+    return MiningResult(
+        note_id,
+        card_ids,
+        False,
+        new_limit_increase,
+        created=False,
+        repositioned_existing=True,
+        undoable=True,
+    )
 
 
 def _search_escape(value: str) -> str:

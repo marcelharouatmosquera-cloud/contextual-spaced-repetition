@@ -16,7 +16,11 @@ from .config import (
 )
 from .auto_config import auto_config_summary, detect_deck_configuration
 from .diagnostics import collect_diagnostics, format_diagnostics
-from .corpus import delete_sentences_for_language, sentence_count_for_language
+from .corpus import (
+    delete_sentences_for_language,
+    open_review_database,
+    sentence_count_for_language,
+)
 from .importer import download_tatoeba_sentences, import_corpus_file, import_word_forms_file
 from .language_profiles import load_language_profiles
 from .favorites import favorite_sentences, remove_favorite_sentence
@@ -1255,6 +1259,111 @@ def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma:
     buttons_row.addWidget(remove_button)
     buttons_row.addStretch(1)
     layout.addLayout(buttons_row)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    dialog.exec()
+
+
+def recent_sentence_records(
+    database_path: Path, language: str, limit: int = 100
+) -> list[Dict[str, Any]]:
+    """Return newest-first snapshots for the current corpus history."""
+    from .reviewer import (
+        _clean_sentence_id_list,
+        _read_recent_sentence_histories,
+        _recent_sentence_history_path,
+        _recent_sentence_key,
+    )
+
+    resolved = Path(database_path)
+    if not resolved.is_file():
+        return []
+    histories = _read_recent_sentence_histories(_recent_sentence_history_path())
+    sentence_ids = _clean_sentence_id_list(
+        histories.get(_recent_sentence_key(resolved, language))
+    )
+    requested_ids = list(reversed(sentence_ids[-max(1, int(limit or 1)) :]))
+    if not requested_ids:
+        return []
+
+    placeholders = ", ".join("?" for _sentence_id in requested_ids)
+    conn = open_review_database(resolved)
+    try:
+        rows = conn.execute(
+            "SELECT id, full_text, translation, source FROM sentences "
+            "WHERE id IN (%s)" % placeholders,
+            tuple(requested_ids),
+        ).fetchall()
+    finally:
+        conn.close()
+    by_id = {
+        int(row["id"]): {
+            "sentence_id": int(row["id"]),
+            "text": str(row["full_text"] or ""),
+            "translation": str(row["translation"] or ""),
+            "source": str(row["source"] or ""),
+        }
+        for row in rows
+    }
+    return [by_id[sentence_id] for sentence_id in requested_ids if sentence_id in by_id]
+
+
+def show_recent_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma: no cover - Anki UI
+    from aqt.qt import (
+        QDialog,
+        QDialogButtonBox,
+        QHBoxLayout,
+        QListWidget,
+        QTextBrowser,
+        QVBoxLayout,
+    )
+
+    config = load_config(mw, addon_name)
+    database_path = resolve_database_path(config)
+    profile = load_language_profiles().get(config.language)
+    language_name = profile.name if profile and profile.name else config.language.upper()
+    recent = recent_sentence_records(database_path, config.language, limit=100)
+
+    dialog = QDialog(mw)
+    dialog.setWindowTitle("Last 100 Sentences: %s" % language_name)
+    dialog.resize(820, 560)
+    layout = QVBoxLayout(dialog)
+    content = QHBoxLayout()
+    sentence_list = QListWidget()
+    details = QTextBrowser()
+    content.addWidget(sentence_list, 2)
+    content.addWidget(details, 3)
+    layout.addLayout(content, 1)
+
+    def render_selected() -> None:
+        index = sentence_list.currentRow()
+        if index < 0 or index >= len(recent):
+            details.setHtml("<p>Select a recent sentence to review it.</p>")
+            return
+        item = recent[index]
+        translation = _escape_html(item.get("translation", "")) or "No stored translation."
+        source = _escape_html(item.get("source", ""))
+        details.setHtml(
+            "<h2>%s</h2><p><b>Translation:</b> %s</p>%s"
+            % (
+                _escape_html(item.get("text", "")),
+                translation,
+                "<p><b>Source:</b> %s</p>" % source if source else "",
+            )
+        )
+
+    for item in recent:
+        sentence_list.addItem(str(item.get("text", "") or "Recent sentence"))
+    sentence_list.currentRowChanged.connect(lambda _row: render_selected())
+    if recent:
+        sentence_list.setCurrentRow(0)
+    else:
+        details.setHtml(
+            "<h2>No recent sentences yet</h2>"
+            "<p>Sentences will appear here after they are shown in Contextual Review.</p>"
+        )
 
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
     buttons.rejected.connect(dialog.reject)

@@ -86,6 +86,7 @@ class BootstrapTests(unittest.TestCase):
                 [
                     "Start Review",
                     "Favorite Sentences",
+                    "Last 100 Sentences",
                     "Settings",
                     "Quick Guide",
                     "Diagnostics",

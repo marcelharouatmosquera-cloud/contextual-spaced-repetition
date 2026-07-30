@@ -216,6 +216,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog._request_sentence_tts = lambda: calls.append("speak_sentence")
         dialog._undo_last_review = lambda: calls.append("undo")
         dialog._toggle_active_favorite = lambda: calls.append("toggle_favorite")
+        dialog._open_recent_sentences = lambda: calls.append("recent_sentences")
 
         dialog._on_bridge_command('{"action": "diagnostics"}')
         dialog._on_bridge_command('{"action": "settings"}')
@@ -231,6 +232,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog._on_bridge_command('{"action": "speak_sentence"}')
         dialog._on_bridge_command('{"action": "undo"}')
         dialog._on_bridge_command('{"action": "toggle_favorite"}')
+        dialog._on_bridge_command('{"action": "recent_sentences"}')
 
         self.assertEqual(
             calls,
@@ -246,6 +248,7 @@ class ReviewerBridgeTests(unittest.TestCase):
                 "speak_sentence",
                 "undo",
                 "toggle_favorite",
+                "recent_sentences",
             ],
         )
 

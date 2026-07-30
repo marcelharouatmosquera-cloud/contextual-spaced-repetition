@@ -542,6 +542,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._undo_last_review()
         elif payload.get("action") == "toggle_favorite":
             self._toggle_active_favorite()
+        elif payload.get("action") == "recent_sentences":
+            self._open_recent_sentences()
 
         return True
 
@@ -835,7 +837,11 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     self.config,
                     audio_path=audio_path,
                 )
-                marker = _capture_anki_undo_marker(self.mw)
+                marker = (
+                    _capture_anki_undo_marker(self.mw)
+                    if bool(getattr(result, "undoable", True))
+                    else None
+                )
                 if marker is not None:
                     markers = getattr(self, "_mining_undo_markers", None)
                     if markers is None:
@@ -845,9 +851,13 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     self._notify_undo_available(True)
                 queued_card_ids = self._queue_mined_note_for_review(result)
                 append_debug_log(
-                    "mined_note_created",
+                    "mined_note_result",
                     note_id=int(result.note_id),
                     card_ids=list(result.card_ids),
+                    created=bool(getattr(result, "created", True)),
+                    repositioned_existing=bool(
+                        getattr(result, "repositioned_existing", False)
+                    ),
                     queued_card_ids=list(queued_card_ids),
                     include_new_cards=bool(
                         getattr(self.config, "include_new_cards", False)
@@ -861,11 +871,32 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                         mapping = {}
                         self._mined_card_ids_by_undo_step = mapping
                     mapping[marker.last_step] = tuple(queued_card_ids)
-                message = "'%s' was added successfully. Anki created %s card%s at the front of the New queue." % (
-                    target_word,
-                    len(result.card_ids),
-                    "" if len(result.card_ids) == 1 else "s",
-                )
+                if bool(getattr(result, "created", True)):
+                    message = "'%s' was added successfully. Anki created %s card%s at the front of the New queue." % (
+                        target_word,
+                        len(result.card_ids),
+                        "" if len(result.card_ids) == 1 else "s",
+                    )
+                elif bool(getattr(result, "repositioned_existing", False)):
+                    new_count = sum(
+                        int(getattr(self.mw.col.get_card(card_id), "queue", -1)) == 0
+                        for card_id in result.card_ids
+                    )
+                    message = (
+                        "'%s' already exists in this deck. Its %s New card%s "
+                        "were moved to the front; no duplicate note was created."
+                        % (
+                            target_word,
+                            new_count,
+                            "" if new_count == 1 else "s",
+                        )
+                    )
+                else:
+                    message = (
+                        "'%s' already exists and is already being studied. "
+                        "Its Anki schedule was left unchanged; no duplicate note was created."
+                        % target_word
+                    )
                 if queued_card_ids:
                     message += (
                         " After you grade this sentence, the new word will get its own "
@@ -873,15 +904,23 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     )
                 if result.new_limit_increase:
                     message += " Today's New limit increased by %s." % result.new_limit_increase
-                if audio_error:
+                if bool(getattr(result, "created", True)) and audio_error:
                     message += " Audio was unavailable."
-                elif audio_path is not None and not result.audio_added:
+                elif (
+                    bool(getattr(result, "created", True))
+                    and audio_path is not None
+                    and not result.audio_added
+                ):
                     message += " The note type has no audio field, so no audio was attached."
                 if marker is not None:
                     message += " Press Ctrl+Z now if you want to undo it."
-                else:
+                elif bool(getattr(result, "created", True)):
                     message += " Anki did not expose an undo action for this note."
-                self._notify_mining_finished(True, message)
+                self._notify_mining_finished(
+                    True,
+                    message,
+                    reused=not bool(getattr(result, "created", True)),
+                )
             except Exception as exc:
                 self._notify_mining_finished(False, str(exc))
 
@@ -1073,13 +1112,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             if not any(int(card.card_id) in removed_ids for card in batch)
         ]
 
-    def _notify_mining_finished(self, success: bool, message: str) -> None:
+    def _notify_mining_finished(
+        self, success: bool, message: str, reused: bool = False
+    ) -> None:
         try:
             self.web.eval(
-                "window.contextualMineFinished(%s, %s);"
+                "window.contextualMineFinished(%s, %s, %s);"
                 % (
                     "true" if success else "false",
                     json.dumps(str(message or ""), ensure_ascii=False),
+                    "true" if reused else "false",
                 )
             )
         except Exception:
@@ -1237,6 +1279,14 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             show_diagnostics_dialog(self.mw, self.addon_name)
         except Exception as exc:
             self._show_warning("Could not open diagnostics:\n\n%s" % exc)
+
+    def _open_recent_sentences(self) -> None:
+        try:
+            from .dialogs import show_recent_sentences_dialog
+
+            show_recent_sentences_dialog(self.mw, self.addon_name)
+        except Exception as exc:
+            self._show_warning("Could not open recent sentences:\n\n%s" % exc)
 
     def _open_lookup(self, words: Iterable[str]) -> None:
         template = (self.config.dictionary_url_template or "").strip()

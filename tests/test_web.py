@@ -250,7 +250,8 @@ class WebTests(unittest.TestCase):
         self.assertIn("window.contextualTranslationFinished", html)
         self.assertIn("contextTranslationCache", html)
         self.assertIn('mine.textContent = "Add Note"', html)
-        self.assertIn("Creates a new note using this deck's note type", html)
+        self.assertIn("Creates a note using this deck's note type", html)
+        self.assertIn("If the exact word already exists", html)
         self.assertIn('mine.setAttribute(\n      "aria-label"', html)
         self.assertIn("showMineConfirmation", html)
         self.assertIn("Check the dictionary form", html)
@@ -280,6 +281,14 @@ class WebTests(unittest.TestCase):
         self.assertIn('action: "toggle_favorite"', html)
         self.assertIn("window.contextualFavoriteChanged", html)
         self.assertIn("#favorite {\n  position: fixed;\n  top: 14px;\n  right: 14px;", html)
+
+    def test_recent_sentences_button_opens_simple_history_view(self) -> None:
+        html = render_task_html(self._task())
+
+        self.assertIn('id="recent-sentences"', html)
+        self.assertIn('title="Show the last 100 sentences you saw"', html)
+        self.assertIn('action: "recent_sentences"', html)
+        self.assertIn("#recent-sentences {\n  position: fixed;", html)
 
     def test_today_progress_is_stacked_and_anchored_after_actions(self) -> None:
         html = render_task_html(

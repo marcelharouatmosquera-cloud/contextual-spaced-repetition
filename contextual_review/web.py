@@ -61,6 +61,7 @@ def render_task_html(
     undo_disabled = "" if can_undo else " disabled"
     page_template = """
 <main class="review-shell">
+  <button id="recent-sentences" class="compact-action" type="button" title="Show the last 100 sentences you saw" aria-label="Show recent sentences">&#x1F550;</button>
   <button id="favorite" class="compact-action" type="button" title="Save sentence to favorites" aria-label="Save sentence to favorites" aria-pressed="__FAVORITE_PRESSED__">__FAVORITE_SYMBOL__</button>
   <header class="review-header">
     <p id="review-guidance" class="review-guidance">Read the sentence, then click any highlighted word you forgot.</p>
@@ -121,6 +122,7 @@ const lookup = document.getElementById("lookup");
 const submit = document.getElementById("submit");
 const selectionSummary = document.getElementById("selection-summary");
 const undo = document.getElementById("undo");
+const recentSentences = document.getElementById("recent-sentences");
 const favorite = document.getElementById("favorite");
 const speakSentence = document.getElementById("speak-sentence");
 const ttsStatus = document.getElementById("tts-status");
@@ -436,6 +438,10 @@ favorite.addEventListener("click", () => {
   pycmd(JSON.stringify({ action: "toggle_favorite" }));
 });
 
+recentSentences.addEventListener("click", () => {
+  pycmd(JSON.stringify({ action: "recent_sentences" }));
+});
+
 window.contextualFavoriteChanged = (saved, error) => {
   favorite.disabled = false;
   if (error) {
@@ -572,10 +578,10 @@ function showContextTranslation(span, text, loading = false, canMine = !loading)
     mine.type = "button";
     mine.className = "mine-word";
     mine.textContent = "Add Note";
-    mine.title = "Creates a new note using this deck's note type and places its new cards at the front of the New queue.";
+    mine.title = "Creates a note using this deck's note type. If the exact word already exists, its New cards are moved to the front instead.";
     mine.setAttribute(
       "aria-label",
-      "Add Note. Creates a new note using this deck's note type and places its new cards at the front of the New queue."
+      "Add Note. Creates a note using this deck's note type. If the exact word already exists, its New cards are moved to the front instead."
     );
     mine.addEventListener("click", () => showMineConfirmation(span, text));
     contextTranslationTooltip.appendChild(mine);
@@ -597,8 +603,8 @@ function showMineConfirmation(span, translatedText) {
   const explanation = document.createElement("p");
   explanation.className = "mine-explanation";
   explanation.textContent = sentenceTranslation
-    ? "Check the dictionary form. The sentence, its translation, and both card directions will be added automatically."
-    : "Check the dictionary form. The sentence and both card directions will be added; its translation is not available yet.";
+    ? "Check the dictionary form. An exact match is reused; otherwise the sentence, its translation, and this note type's card directions are added automatically."
+    : "Check the dictionary form. An exact match is reused; otherwise the sentence and this note type's card directions are added.";
   form.appendChild(explanation);
 
   const wordLabel = document.createElement("label");
@@ -716,13 +722,13 @@ window.contextualTranslationFinished = (kind, requestId, sourceText, translatedT
   showContextTranslation(contextHoverNode, displayText, false, !error);
 };
 
-window.contextualMineFinished = (success, message) => {
+window.contextualMineFinished = (success, message, reused = false) => {
   delete contextTranslationTooltip.dataset.mining;
   contextTranslationTooltip.querySelectorAll(".mine-status").forEach((node) => node.remove());
   const mine = contextTranslationTooltip.querySelector(".mine-word");
   if (mine) {
     mine.disabled = Boolean(success);
-    mine.textContent = success ? "Added" : "Try Again";
+    mine.textContent = success ? (reused ? "Already in Deck" : "Added") : "Try Again";
   }
   const cancel = contextTranslationTooltip.querySelector(".mine-cancel");
   if (cancel) {
@@ -1716,6 +1722,19 @@ body {
   padding: 0;
   border-radius: 999px;
   font-size: 18px;
+  line-height: 1;
+}
+
+#recent-sentences {
+  position: fixed;
+  top: 14px;
+  right: 52px;
+  z-index: 5;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 15px;
   line-height: 1;
 }
 
