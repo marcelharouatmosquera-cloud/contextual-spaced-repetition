@@ -102,6 +102,14 @@ def create_mined_note(
     _add_note_tag(note, MINED_NOTE_TAG)
 
     new_limit_increase = 0
+    if config.increase_new_limit_after_mining:
+        # extend_limits() is deliberately not undoable in Anki and clears the
+        # existing undo stack. Run it before opening our custom undo entry so
+        # the note creation remains the latest native undo action.
+        new_limit_increase = _anticipated_new_card_count(note, notetype)
+        if new_limit_increase:
+            _adjust_today_new_limit(col, deck_id, new_limit_increase)
+
     undo_entry = _begin_undo(col, "Add Contextual Note")
     try:
         _add_note(col, note, deck_id)
@@ -117,12 +125,13 @@ def create_mined_note(
         if new_card_ids:
             _reposition_new_cards_first(col, new_card_ids)
             _merge_undo(col, undo_entry)
-            if config.increase_new_limit_after_mining:
-                _extend_today_new_limit(col, deck_id, len(new_card_ids))
-                new_limit_increase = len(new_card_ids)
-                _merge_undo(col, undo_entry)
     except Exception:
         _rollback_undo(col)
+        if new_limit_increase:
+            try:
+                _adjust_today_new_limit(col, deck_id, -new_limit_increase)
+            except Exception:
+                pass
         raise
 
     _refresh(mw)
@@ -430,9 +439,54 @@ def _reposition_new_cards_first(col: Any, card_ids: Sequence[int]) -> None:
     )
 
 
-def _extend_today_new_limit(col: Any, deck_id: int, new_cards: int) -> None:
-    """Temporarily add one New-card slot for each newly generated card."""
-    if new_cards <= 0:
+def _anticipated_new_card_count(note: Any, notetype: Dict[str, Any]) -> int:
+    """Predict Anki's generated-card count before the undo-clearing limit bump."""
+    if int(notetype.get("type", 0) or 0) == 1:
+        cloze_numbers = getattr(note, "cloze_numbers_in_fields", None)
+        if callable(cloze_numbers):
+            try:
+                return len({int(number) for number in cloze_numbers()})
+            except Exception:
+                pass
+
+    field_values: List[str] = []
+    for field in notetype.get("flds", ()) or ():
+        name = str(field.get("name", "") or "") if isinstance(field, dict) else ""
+        try:
+            field_values.append(_plain_text(note[name]))
+        except Exception:
+            field_values.append("")
+
+    requirements = notetype.get("req", ()) or ()
+    if requirements:
+        generated = 0
+        for requirement in requirements:
+            try:
+                _card_ordinal, kind, field_ordinals = requirement
+                populated = [
+                    bool(field_values[int(ordinal)])
+                    for ordinal in field_ordinals
+                    if 0 <= int(ordinal) < len(field_values)
+                ]
+            except Exception:
+                continue
+            normalized_kind = str(kind or "").strip().casefold()
+            if normalized_kind == "all":
+                enabled = bool(populated) and all(populated)
+            elif normalized_kind == "none":
+                enabled = True
+            else:
+                enabled = any(populated)
+            generated += int(enabled)
+        return generated
+
+    templates = notetype.get("tmpls", ()) or ()
+    return len(templates)
+
+
+def _adjust_today_new_limit(col: Any, deck_id: int, new_delta: int) -> None:
+    """Temporarily adjust today's New-card slots before custom undo begins."""
+    if new_delta == 0:
         return
     decks = getattr(col, "decks", None)
     current = getattr(decks, "current", None)
@@ -448,7 +502,7 @@ def _extend_today_new_limit(col: Any, deck_id: int, new_cards: int) -> None:
     )
     try:
         select(int(deck_id))
-        extend_limits(int(new_cards), 0)
+        extend_limits(int(new_delta), 0)
     finally:
         if original_deck_id:
             select(original_deck_id)
@@ -471,7 +525,12 @@ def _merge_undo(col: Any, undo_entry: int) -> None:
 def _rollback_undo(col: Any) -> None:
     undo = getattr(col, "undo", None)
     if callable(undo):
-        undo()
+        try:
+            undo()
+        except Exception:
+            # Preserve the original creation error if Anki has already cleared
+            # or consumed the custom undo entry.
+            pass
 
 
 def _collection(mw: Any) -> Any:

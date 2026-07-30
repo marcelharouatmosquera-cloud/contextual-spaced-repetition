@@ -842,6 +842,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                         markers = []
                         self._mining_undo_markers = markers
                     markers.append(marker)
+                    self._notify_undo_available(True)
                 queued_card_ids = self._queue_mined_note_for_review(result)
                 append_debug_log(
                     "mined_note_created",
@@ -851,6 +852,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     include_new_cards=bool(
                         getattr(self.config, "include_new_cards", False)
                     ),
+                    undo_step=int(marker.last_step) if marker is not None else 0,
+                    undo_label=str(marker.label) if marker is not None else "",
                 )
                 if marker is not None:
                     mapping = getattr(self, "_mined_card_ids_by_undo_step", None)
@@ -874,7 +877,10 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     message += " Audio was unavailable."
                 elif audio_path is not None and not result.audio_added:
                     message += " The note type has no audio field, so no audio was attached."
-                message += " Press Ctrl+Z now if you want to undo it."
+                if marker is not None:
+                    message += " Press Ctrl+Z now if you want to undo it."
+                else:
+                    message += " Anki did not expose an undo action for this note."
                 self._notify_mining_finished(True, message)
             except Exception as exc:
                 self._notify_mining_finished(False, str(exc))

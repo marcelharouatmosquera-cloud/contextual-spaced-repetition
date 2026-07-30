@@ -47,11 +47,14 @@ class FakeScheduler:
     def __init__(self):
         self.repositioned = []
         self.extended = []
+        self.operation_log = []
 
     def reposition_new_cards(self, **kwargs):
+        self.operation_log.append("reposition")
         self.repositioned.append(kwargs)
 
     def extend_limits(self, new, rev):
+        self.operation_log.append("extend_limits")
         self.extended.append((new, rev))
 
 
@@ -76,12 +79,15 @@ class FakeCollection:
     def __init__(self):
         self.word_notetype = {
             "name": "Basic (and reversed card)",
+            "type": 0,
             "flds": [
                 {"name": "German"},
                 {"name": "English"},
                 {"name": "Example Sentence"},
                 {"name": "Audio"},
             ],
+            "tmpls": [{"ord": 0, "name": "Card 1"}, {"ord": 1, "name": "Card 2"}],
+            "req": [[0, "any", [0]], [1, "any", [1]]],
         }
         self.favorite_notetype = {
             "name": "Contextual Review Favorite",
@@ -121,6 +127,7 @@ class FakeCollection:
         return FakeNote(notetype)
 
     def add_note(self, note, deck_id):
+        self.sched.operation_log.append("add_note")
         note.id = self.next_note_id
         self.next_note_id += 1
         self.notes[note.id] = note
@@ -138,10 +145,12 @@ class FakeCollection:
         return self.notes[note_id]
 
     def add_custom_undo_entry(self, label):
+        self.sched.operation_log.append("begin_undo")
         self.undo_labels.append(label)
         return 42
 
     def merge_undo_entries(self, target):
+        self.sched.operation_log.append("merge_undo")
         self.merged.append(target)
 
     def undo(self):
@@ -236,7 +245,18 @@ class NoteCreationTests(unittest.TestCase):
         self.assertEqual(result.new_limit_increase, 2)
         self.assertEqual(mw.col.sched.extended, [(2, 0)])
         self.assertEqual(mw.col.decks.selected_id, 7)
-        self.assertEqual(mw.col.merged, [42, 42, 42])
+        self.assertEqual(mw.col.merged, [42, 42])
+        self.assertEqual(
+            mw.col.sched.operation_log,
+            [
+                "extend_limits",
+                "begin_undo",
+                "add_note",
+                "merge_undo",
+                "reposition",
+                "merge_undo",
+            ],
+        )
 
     def test_duplicate_mined_word_is_rejected_before_an_undo_entry(self):
         mw = self._mw()
