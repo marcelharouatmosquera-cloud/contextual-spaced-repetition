@@ -23,6 +23,14 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests
 
+      - name: Check release version
+        run: |
+          python - <<'PY'
+          import os
+          from contextual_review.release import VERSION
+          assert os.environ["GITHUB_REF_NAME"] == "v" + VERSION, "Tag must match the add-on version"
+          PY
+
       - name: Run smoke review
         run: python scripts/smoke_review_loop.py
 
@@ -30,6 +38,6 @@ jobs:
         run: python scripts/package_addon.py --no-build-dir
 
       - name: Create GitHub release
-        run: gh release create "$GITHUB_REF_NAME" dist/contextual_review_addon.ankiaddon --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/contextual_review_addon.ankiaddon --notes-file CHANGELOG.md --title "Contextual Spaced Repetition $GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}

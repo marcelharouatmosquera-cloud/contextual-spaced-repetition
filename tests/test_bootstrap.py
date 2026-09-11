@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 import contextual_review as bootstrap
 
@@ -76,7 +77,9 @@ class BootstrapTests(unittest.TestCase):
             sys.modules["aqt.utils"] = utils
 
             bootstrap._ACTIONS = []
-            bootstrap.setup("contextual_review")
+            with patch("contextual_review.launcher.register_launcher") as register:
+                bootstrap.setup("contextual_review")
+                register.assert_called_once()
 
             self.assertEqual([menu.label for menu in mw.form.menuTools.submenus], ["Contextual Review"])
             submenu = mw.form.menuTools.submenus[0]
@@ -90,6 +93,8 @@ class BootstrapTests(unittest.TestCase):
                     "Settings",
                     "Quick Guide",
                     "Diagnostics",
+                    "Version / About",
+                    "Report a bug",
                 ],
             )
             self.assertEqual(submenu.separators, 1)

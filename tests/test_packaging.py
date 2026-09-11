@@ -43,11 +43,18 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("contextual_review/diagnostics.py", arcnames)
         self.assertIn("contextual_review/note_creation.py", arcnames)
         self.assertIn("contextual_review/debug_log.py", arcnames)
+        self.assertIn("contextual_review/json_state.py", arcnames)
         self.assertIn("contextual_review/reviewer.py", arcnames)
         self.assertNotIn("user_files/contextual_review.log", arcnames)
+        self.assertNotIn("user_files/contextual_review.log.1", arcnames)
+        self.assertEqual(
+            {name for name in arcnames if name.startswith("user_files/")},
+            {"user_files/README.txt"},
+        )
         self.assertNotIn("tests/test_packaging.py", arcnames)
         self.assertFalse(any(name.startswith("IMPORTANT-Development instructions/") for name in arcnames))
         self.assertFalse(any("__pycache__" in name for name in arcnames))
+        self.assertFalse(any(name.startswith("contextual_review/_vendor/bin/") for name in arcnames))
 
     def test_package_addon_creates_valid_zip(self) -> None:
         packager = load_packager()
@@ -68,13 +75,20 @@ class PackagingTests(unittest.TestCase):
             self.assertIn("contextual_review/diagnostics.py", names)
             self.assertIn("contextual_review/note_creation.py", names)
             self.assertIn("contextual_review/debug_log.py", names)
+            self.assertIn("contextual_review/json_state.py", names)
             self.assertIn("data/contextual_sentences.db", names)
             self.assertIn("data/language_profiles.json", names)
             self.assertIn("data/seed_word_forms.tsv", names)
             self.assertIn("user_files/README.txt", names)
             self.assertNotIn("user_files/contextual_review.log", names)
+            self.assertNotIn("user_files/contextual_review.log.1", names)
+            self.assertEqual(
+                {name for name in names if name.startswith("user_files/")},
+                {"user_files/README.txt"},
+            )
             self.assertIn("docs/USER_GUIDE.md", names)
             self.assertNotIn("tests/test_packaging.py", names)
+            self.assertFalse(any(name.startswith("contextual_review/_vendor/bin/") for name in names))
 
 
 if __name__ == "__main__":

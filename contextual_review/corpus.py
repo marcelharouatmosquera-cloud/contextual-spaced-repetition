@@ -117,15 +117,7 @@ def open_review_database(path: Path) -> sqlite3.Connection:
 
 
 def initialize_database(path: Path) -> None:
-    conn = connect_database(path)
-    try:
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def migrate_database(path: Path) -> None:
-    """Apply corpus schema migrations to an existing writable database."""
+    """Create or migrate a writable corpus database."""
     conn = connect_database(path)
     conn.close()
 
@@ -292,6 +284,12 @@ def select_review_task(
 ) -> Optional[ReviewTask]:
     conn = open_review_database(db_path)
     try:
+        # Apply eligibility before the result limit, including legacy rows
+        # whose word counts were not stored by the importer.
+        conn.create_function("review_word_count", 2, count_words)
+        filters = _CandidateFilter.for_review(
+            min_sentence_words, max_sentence_words, shown_sentence_ids
+        )
         all_due_by_key = _due_by_key(conn, due_cards, matching_mode)
         if not all_due_by_key:
             return None
@@ -319,6 +317,7 @@ def select_review_task(
             int(query_term_limit),
             is_unsegmented_language(language),
             overlap_expansions=expansions,
+            filters=filters,
         )
     except sqlite3.OperationalError as exc:
         if "interrupted" in str(exc).lower():
@@ -331,6 +330,8 @@ def select_review_task(
         conn.close()
 
     candidates: List[SentenceCandidate] = []
+    candidate_tokens: Dict[int, List[Token]] = {}
+    candidate_cards: Dict[int, Dict[str, List[DueCard]]] = {}
     for row in rows:
         sentence_id = int(row["id"])
         if sentence_id in shown_sentence_ids:
@@ -350,7 +351,26 @@ def select_review_task(
             matched = _matched_base_keys(sentence_keys, expansions)
         if not matched:
             continue
-        score = _score_match(matched, due_by_key)
+        # The search index is only a candidate source. Grade only targets that
+        # can actually be displayed/masked in this sentence, even with stale
+        # index entries or overlapping unsegmented word forms.
+        tokens = _tokens_for_sentence(
+            str(row["full_text"]), row_language, set(matched), matching_mode,
+            {key: [card.card_id for card in due_by_key[key]] for key in matched},
+            expansions, _due_cards_by_id(matched, due_by_key),
+        )
+        visible_ids = {cid for token in tokens if token.is_target for cid in token.card_ids}
+        visible_cards = {
+            key: [card for card in due_by_key[key] if card.card_id in visible_ids]
+            for key in matched
+        }
+        visible_cards = {key: cards for key, cards in visible_cards.items() if cards}
+        if anchor_key not in visible_cards:
+            continue
+        matched = list(visible_cards)
+        candidate_tokens[sentence_id] = tokens
+        candidate_cards[sentence_id] = visible_cards
+        score = _score_match(matched, visible_cards)
         candidates.append(
             SentenceCandidate(
                 sentence_id=sentence_id,
@@ -359,8 +379,12 @@ def select_review_task(
                 translation=row["translation"],
                 matched_lemmas=matched,
                 score=score,
-                matched_card_count=_matched_card_count(matched, due_by_key),
-                matched_learning_card_count=_matched_learning_card_count(matched, due_by_key),
+                matched_card_count=_matched_card_count(matched, visible_cards),
+                matched_due_card_count=sum(
+                    card.due_in_days <= 0
+                    for card in _due_cards_by_id(matched, visible_cards).values()
+                ),
+                matched_learning_card_count=_matched_learning_card_count(matched, visible_cards),
                 bm25_score=float(row["bm25_score"] or 0.0),
                 word_count=word_count,
             )
@@ -387,36 +411,11 @@ def select_review_task(
     soft_avoid = soft_avoid_sentence_ids or ()
     preferred = [candidate for candidate in candidates if candidate.sentence_id not in soft_avoid]
     best = min(preferred or candidates, key=_candidate_sort_key)
-    card_ids_by_key: Dict[str, List[int]] = {}
-    for lemma in best.matched_lemmas:
-        card_ids_by_key[lemma] = sorted({card.card_id for card in due_by_key[lemma]})
-    due_cards_by_id = _due_cards_by_id(best.matched_lemmas, due_by_key)
-    tokens = _tokens_for_sentence(
-        best.full_text,
-        language,
-        set(card_ids_by_key),
-        matching_mode,
-        card_ids_by_key,
-        expansions,
-        due_cards_by_id,
-    )
-    token_card_ids = {
-        int(card_id)
-        for token in tokens
-        if token.is_target
-        for card_id in token.card_ids
-    }
-    if token_card_ids:
-        card_ids_by_key = {
-            key: [card_id for card_id in card_ids if card_id in token_card_ids]
-            for key, card_ids in card_ids_by_key.items()
-        }
-        card_ids_by_key = {
-            key: card_ids for key, card_ids in card_ids_by_key.items() if card_ids
-        }
-    selected_due_by_key = {
-        key: [card for card in due_by_key[key] if card.card_id in set(card_ids)]
-        for key, card_ids in card_ids_by_key.items()
+    tokens = candidate_tokens[best.sentence_id]
+    selected_due_by_key = candidate_cards[best.sentence_id]
+    card_ids_by_key = {
+        key: sorted({card.card_id for card in cards})
+        for key, cards in selected_due_by_key.items()
     }
     target_words = _target_words_for_match(tuple(card_ids_by_key), selected_due_by_key)
 
@@ -446,11 +445,13 @@ def build_expanded_match_query(terms: Iterable[Tuple[str, bool]], limit: int = 4
 
 
 def _score_match(matched_lemmas: Sequence[str], due_by_lemma: Dict[str, List[DueCard]]) -> float:
-    score = 0.0
-    for lemma in matched_lemmas:
-        for card in due_by_lemma.get(lemma, []):
-            score += card.priority or (10.0 + min(float(card.overdue), 30.0) / 3.0)
-    return score
+    # One independently scheduled card gets one vote, even if several of its
+    # words match. Optional early reviews contribute less than due reviews.
+    return sum(
+        (card.priority or (10.0 + min(float(card.overdue), 30.0) / 3.0))
+        / (1 + max(0, int(card.due_in_days)))
+        for card in _due_cards_by_id(matched_lemmas, due_by_lemma).values()
+    )
 
 
 def _greedy_anchor_key(
@@ -466,6 +467,7 @@ def _greedy_anchor_key(
         ],
         key=lambda item: (
             -int(bool(item[0].is_learning_due)),
+            max(0, int(item[0].due_in_days)),
             -float(item[0].overdue or 0.0),
             -float(item[0].priority or 0.0),
             int(item[0].due_in_days),
@@ -541,8 +543,9 @@ def _target_words_for_match(
     )
 
 
-def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, int, float, int, float, int, int]:
+def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, int, int, float, int, float, int, int]:
     return (
+        -candidate.matched_due_card_count,
         -candidate.matched_card_count,
         -candidate.matched_learning_card_count,
         -candidate.score,
@@ -551,6 +554,21 @@ def _candidate_sort_key(candidate: SentenceCandidate) -> Tuple[int, int, float, 
         candidate.word_count,
         candidate.sentence_id,
     )
+
+
+@dataclass(frozen=True)
+class _CandidateFilter:
+    sql: str = ""
+    params: Tuple[Any, ...] = ()
+
+    @classmethod
+    def for_review(cls, minimum: int, maximum: int, shown_ids: Set[int]) -> "_CandidateFilter":
+        sql = """ AND (CASE WHEN s.word_count > 0 THEN s.word_count
+                  ELSE review_word_count(s.full_text, s.language) END) BETWEEN ? AND ?"""
+        ids = tuple(sorted(int(sentence_id) for sentence_id in shown_ids))
+        if ids:
+            sql += " AND s.id NOT IN (%s)" % ", ".join("?" for _ in ids)
+        return cls(sql, (int(minimum), int(maximum), *ids))
 
 
 def _candidate_rows(
@@ -562,6 +580,7 @@ def _candidate_rows(
     query_term_limit: int,
     include_substring_matches: bool = False,
     overlap_expansions: Optional[Sequence[QueryExpansion]] = None,
+    filters: _CandidateFilter = _CandidateFilter(),
 ) -> List[sqlite3.Row]:
     ranked_expansions = sorted(
         expansions,
@@ -576,6 +595,7 @@ def _candidate_rows(
             ranked_expansions,
             languages,
             candidate_limit * 4,
+            filters,
         )
     seen_sentence_ids: Set[int] = set()
     rows: List[sqlite3.Row] = []
@@ -601,11 +621,20 @@ def _candidate_rows(
             expansion.base_key,
         ),
     )
-    other_terms: List[Tuple[str, bool]] = []
+    # Probe currently due companions separately, before future words can fill
+    # the bounded pool. Sorting after retrieval cannot recover discarded hits.
+    other_term_groups: List[List[Tuple[str, bool]]] = [[], []]
     for expansion in other_expansions:
+        future_only = all(card.due_in_days > 0 for card in due_by_lemma[expansion.base_key])
+        other_terms = other_term_groups[int(future_only)]
         other_terms.extend((form, False) for form in expansion.forms)
         if expansion.wildcard_prefix:
             other_terms.append((expansion.wildcard_prefix, True))
+    other_chunks = [
+        group[index : index + chunk_size]
+        for group in other_term_groups
+        for index in range(0, len(group), chunk_size)
+    ]
 
     overlap_row_limit = max(candidate_limit * 2, 20)
     for anchor_index in range(0, len(ranked_terms), chunk_size):
@@ -615,17 +644,17 @@ def _candidate_rows(
         )
         if not anchor_query:
             continue
-        for other_index in range(0, len(other_terms), chunk_size):
+        for other_chunk in other_chunks:
             other_query = build_expanded_match_query(
-                other_terms[other_index : other_index + chunk_size],
+                other_chunk,
                 chunk_size,
             )
             if not other_query:
                 continue
             overlap_query = "(%s) AND (%s)" % (anchor_query, other_query)
             overlap_rows = conn.execute(
-                _candidate_sql("sentence_forms", "word_form_list", len(languages)),
-                (overlap_query, *languages, overlap_row_limit),
+                _candidate_sql("sentence_forms", "word_form_list", len(languages), filters),
+                (overlap_query, *languages, *filters.params, overlap_row_limit),
             ).fetchall()
             for row in overlap_rows:
                 sentence_id = int(row["id"])
@@ -641,8 +670,8 @@ def _candidate_rows(
         if not match_query:
             continue
         chunk_rows = conn.execute(
-            _candidate_sql("sentence_forms", "word_form_list", len(languages)),
-            (match_query, *languages, max(candidate_limit * 2, 20)),
+            _candidate_sql("sentence_forms", "word_form_list", len(languages), filters),
+            (match_query, *languages, *filters.params, max(candidate_limit * 2, 20)),
         ).fetchall()
         for row in chunk_rows:
             sentence_id = int(row["id"])
@@ -660,6 +689,7 @@ def _substring_candidate_rows(
     expansions: Sequence[QueryExpansion],
     languages: Sequence[str],
     limit: int,
+    filters: _CandidateFilter = _CandidateFilter(),
 ) -> List[sqlite3.Row]:
     forms: List[str] = []
     for expansion in expansions:
@@ -673,7 +703,7 @@ def _substring_candidate_rows(
     rows: List[sqlite3.Row] = []
     long_forms = [form for form in forms if len(form) >= 3]
     if long_forms and _table_exists(conn, "fts_cjk"):
-        rows.extend(_fts_cjk_candidate_rows(conn, long_forms, languages, limit))
+        rows.extend(_fts_cjk_candidate_rows(conn, long_forms, languages, limit, filters))
 
     seen_ids = {int(row["id"]) for row in rows}
     remaining_forms = [form for form in forms if len(form) < 3]
@@ -688,6 +718,7 @@ def _substring_candidate_rows(
             indexed_forms,
             languages,
             limit,
+            filters,
         )
         for row in indexed_rows:
             sentence_id = int(row["id"])
@@ -700,6 +731,7 @@ def _substring_candidate_rows(
                 short_forms,
                 languages,
                 limit,
+                filters,
             ):
                 sentence_id = int(row["id"])
                 if sentence_id in seen_ids:
@@ -709,7 +741,7 @@ def _substring_candidate_rows(
         return rows[:limit]
 
     if remaining_forms and len(rows) < limit:
-        for row in _scan_substring_candidate_rows(conn, remaining_forms, languages, limit):
+        for row in _scan_substring_candidate_rows(conn, remaining_forms, languages, limit, filters):
             sentence_id = int(row["id"])
             if sentence_id not in seen_ids:
                 seen_ids.add(sentence_id)
@@ -722,6 +754,7 @@ def _fts_cjk_candidate_rows(
     forms: Sequence[str],
     languages: Sequence[str],
     limit: int,
+    filters: _CandidateFilter = _CandidateFilter(),
 ) -> List[sqlite3.Row]:
     """Retrieve unsegmented-text candidates from the FTS5 trigram index."""
     if not forms:
@@ -738,12 +771,13 @@ def _fts_cjk_candidate_rows(
         LEFT JOIN sentence_forms sf ON sf.sentence_id = s.id
         WHERE fts_cjk MATCH ?
           AND s.language IN (%s)
+          %s
         ORDER BY bm25_score, s.word_count, s.id
         LIMIT ?
-    """ % language_placeholders
+    """ % (language_placeholders, filters.sql)
     return conn.execute(
         sql,
-        (match_query, *languages, max(limit, 20)),
+        (match_query, *languages, *filters.params, max(limit, 20)),
     ).fetchall()
 
 
@@ -752,6 +786,7 @@ def _indexed_substring_candidate_rows(
     forms: Sequence[str],
     languages: Sequence[str],
     limit: int,
+    filters: _CandidateFilter = _CandidateFilter(),
 ) -> List[sqlite3.Row]:
     if not forms:
         return []
@@ -778,12 +813,13 @@ def _indexed_substring_candidate_rows(
         LEFT JOIN sentence_forms sf ON sf.sentence_id = s.id
         WHERE s.language IN (%s)
           AND (%s)
+          %s
         ORDER BY substring_match_count DESC, s.word_count, s.id
         LIMIT ?
-    """ % (match_score, match_score, probe_placeholders, language_placeholders, predicates)
+    """ % (match_score, match_score, probe_placeholders, language_placeholders, predicates, filters.sql)
     return conn.execute(
         sql,
-        (*forms, *forms, *probes, *languages, *forms, max(limit, 20)),
+        (*forms, *forms, *probes, *languages, *forms, *filters.params, max(limit, 20)),
     ).fetchall()
 
 
@@ -832,6 +868,7 @@ def _scan_substring_candidate_rows(
     forms: Sequence[str],
     languages: Sequence[str],
     limit: int,
+    filters: _CandidateFilter = _CandidateFilter(),
 ) -> List[sqlite3.Row]:
 
     rows: List[sqlite3.Row] = []
@@ -852,12 +889,13 @@ def _scan_substring_candidate_rows(
             LEFT JOIN sentence_forms sf ON sf.sentence_id = s.id
             WHERE s.language IN (%s)
               AND (%s)
+              %s
             ORDER BY substring_match_count DESC, s.word_count, s.id
             LIMIT ?
-        """ % (match_score, match_score, language_placeholders, predicates)
+        """ % (match_score, match_score, language_placeholders, predicates, filters.sql)
         chunk_rows = conn.execute(
             sql,
-            (*chunk, *chunk, *languages, *chunk, max(limit, 20)),
+            (*chunk, *chunk, *languages, *chunk, *filters.params, max(limit, 20)),
         ).fetchall()
         for row in chunk_rows:
             sentence_id = int(row["id"])
@@ -870,7 +908,10 @@ def _scan_substring_candidate_rows(
     return rows
 
 
-def _candidate_sql(fts_table: str, fts_column: str, language_count: int) -> str:
+def _candidate_sql(
+    fts_table: str, fts_column: str, language_count: int,
+    filters: _CandidateFilter = _CandidateFilter(),
+) -> str:
     language_placeholders = ", ".join("?" for _ in range(max(1, language_count)))
     return """
         SELECT s.id, s.language, s.full_text, s.translation, s.word_count,
@@ -880,6 +921,7 @@ def _candidate_sql(fts_table: str, fts_column: str, language_count: int) -> str:
         JOIN sentences s ON s.id = sl.sentence_id
         WHERE %s MATCH ?
           AND s.language IN (%s)
+          %s
         ORDER BY bm25_score
         LIMIT ?
         """ % (
@@ -888,6 +930,7 @@ def _candidate_sql(fts_table: str, fts_column: str, language_count: int) -> str:
         fts_table,
         fts_table,
         language_placeholders,
+        filters.sql,
     )
 
 

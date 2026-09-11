@@ -36,7 +36,7 @@ class TranslationTests(unittest.TestCase):
             [("init", "de", "en"), ("translate", "Haus")],
         )
 
-    def test_google_module_requests_are_given_a_bounded_timeout(self) -> None:
+    def test_google_module_requests_are_given_browser_identity_and_timeout(self) -> None:
         calls = []
 
         class FakeRequests:
@@ -60,6 +60,29 @@ class TranslationTests(unittest.TestCase):
             sys.modules.pop(module_name, None)
 
         self.assertEqual(calls[0][1]["timeout"], (4, 8))
+        self.assertEqual(
+            calls[0][1]["headers"]["User-Agent"],
+            translation.TRANSLATION_USER_AGENT,
+        )
+
+    def test_google_request_preserves_an_explicit_user_agent(self) -> None:
+        calls = []
+
+        class FakeRequests:
+            def get(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                return object()
+
+        proxy = translation._RequestsTimeoutProxy(FakeRequests())
+        proxy.get(
+            "https://example.test",
+            headers={"user-agent": "Contextual Review test client"},
+        )
+
+        self.assertEqual(
+            calls[0][1]["headers"],
+            {"user-agent": "Contextual Review test client"},
+        )
 
 
 if __name__ == "__main__":

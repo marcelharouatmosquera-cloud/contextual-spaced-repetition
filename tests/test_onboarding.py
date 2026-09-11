@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 from contextual_review.dialogs import (
     INSTRUCTIONS_HTML,
-    INSTRUCTIONS_TEXT,
     SENTENCE_FILE_FILTER,
     WORD_FORMS_FILE_FILTER,
     _corpus_import_done_message,
@@ -65,26 +64,30 @@ class OnboardingTextTests(unittest.TestCase):
         self.assertEqual([item.field for item in extras], ["Picture"])
 
     def test_instructions_explain_real_review_flow(self) -> None:
-        self.assertIn("Recognition cards show the target word highlighted", INSTRUCTIONS_TEXT)
-        self.assertIn("Recall cards replace it with a blank", INSTRUCTIONS_TEXT)
-        self.assertIn("Click only the words you did not remember", INSTRUCTIONS_TEXT)
-        self.assertIn("Show Solution", INSTRUCTIONS_TEXT)
-        self.assertIn("Grade & Next", INSTRUCTIONS_TEXT)
-        self.assertIn("Again", INSTRUCTIONS_TEXT)
-        self.assertIn("Good", INSTRUCTIONS_TEXT)
+        for text in (
+            "Recognition cards show a highlighted target word",
+            "Recall cards show a blank",
+            "Click only revealed words you <b>did not remember</b>",
+            "Show Solution",
+            "Grade &amp; Next",
+            "Again",
+            "Good",
+        ):
+            self.assertIn(text, INSTRUCTIONS_HTML)
 
     def test_instructions_explain_deck_safety_and_submission_boundary(self) -> None:
-        self.assertIn("does not create, move, edit, or delete your decks or notes", INSTRUCTIONS_TEXT)
-        self.assertIn("choose the deck you want to configure", INSTRUCTIONS_TEXT)
-        self.assertIn("Cards are scheduled only when you press Grade & Next", INSTRUCTIONS_TEXT)
-        self.assertIn("Ctrl+Z immediately undoes", INSTRUCTIONS_TEXT)
-        self.assertIn("Safe to explore", INSTRUCTIONS_HTML)
+        for text in (
+            "does not create or modify decks or notes",
+            "Open Settings and click the deck you want to configure",
+            "Cards change only when you press <b>Grade &amp; Next</b>",
+            "Press <b>Ctrl+Z</b> to undo",
+            "Safe to explore",
+        ):
+            self.assertIn(text, INSTRUCTIONS_HTML)
 
     def test_instructions_explain_file_sources_and_word_forms(self) -> None:
-        self.assertIn("Sentence Library", INSTRUCTIONS_TEXT)
-        self.assertIn("Advanced settings can import .txt, .srt, .tsv, .csv, and .bz2", INSTRUCTIONS_TEXT)
-        self.assertIn("went\tgo", INSTRUCTIONS_TEXT)
-        self.assertIn("Import Word Forms", INSTRUCTIONS_TEXT)
+        for text in ("Sentence Library", "Import Custom Sentence File", "went → go"):
+            self.assertIn(text, INSTRUCTIONS_HTML)
 
     def test_file_dialog_filters_name_supported_formats(self) -> None:
         for extension in (".txt", ".srt", ".tsv", ".csv", ".bz2"):

@@ -18,10 +18,11 @@ INCLUDE_PATHS = (
     "manifest.json",
     "config.json",
     "README.md",
+    "CHANGELOG.md",
     "contextual_review",
     "data",
     "docs",
-    "user_files",
+    "user_files/README.txt",
     "scripts/build_corpus.py",
 )
 REQUIRED_FILES = {
@@ -33,6 +34,9 @@ REQUIRED_FILES = {
     "contextual_review/anki_bridge.py",
     "contextual_review/corpus.py",
     "contextual_review/diagnostics.py",
+    "contextual_review/json_state.py",
+    "contextual_review/release.py",
+    "contextual_review/launcher.py",
     "contextual_review/note_creation.py",
     "contextual_review/web.py",
     "data/contextual_sentences.db",
@@ -44,6 +48,7 @@ EXCLUDED_PARTS = {
     ".mypy_cache",
     ".pytest_cache",
     "__pycache__",
+    "bin",
     "downloads",
     "tts_cache",
     "dist",
@@ -105,6 +110,7 @@ def validate_package_files(files: Iterable[Tuple[Path, str]]) -> None:
         for arcname in arcnames
         if arcname.startswith("tests/")
         or arcname.startswith("IMPORTANT-Development instructions/")
+        or (arcname.startswith("user_files/") and arcname != "user_files/README.txt")
         or "__pycache__/" in arcname
         or arcname.endswith(".pyc")
         or "/downloads/" in arcname

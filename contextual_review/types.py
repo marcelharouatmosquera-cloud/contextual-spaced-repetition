@@ -73,6 +73,7 @@ class SentenceCandidate:
     matched_learning_card_count: int = 0
     bm25_score: float = 0.0
     word_count: int = 0
+    matched_due_card_count: int = 0
 
 
 @dataclass(frozen=True)

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 from contextual_review import reviewer
 from contextual_review.config import USER_ROOT_ENV
@@ -16,6 +18,13 @@ from contextual_review.types import DueCard, ReviewTask, TargetWordDefinition, T
 
 
 class ReviewerBridgeTests(unittest.TestCase):
+    def _new_tts_dialog(self) -> ContextualReviewDialog:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog._tts_sentence_ids_in_flight = set()
+        dialog._tts_ready_paths = {}
+        dialog._tts_play_when_ready = set()
+        return dialog
+
     def _recall_task(self) -> ReviewTask:
         return ReviewTask(
             sentence_id=7,
@@ -35,6 +44,38 @@ class ReviewerBridgeTests(unittest.TestCase):
             ],
             card_ids_by_key={"gehen": [70]},
         )
+
+    def test_sprachschloss_receives_successful_summary_and_review_time(self) -> None:
+        package = ModuleType("sprachschloss")
+        package.__path__ = []
+        integration = ModuleType("sprachschloss.integration")
+        calls = []
+        integration.report_contextual_review = (
+            lambda summary, review_seconds=0.0: calls.append((summary, review_seconds))
+        )
+        summary = SimpleNamespace(answered_card_ids=[7])
+
+        with patch.dict(
+            sys.modules,
+            {"sprachschloss": package, "sprachschloss.integration": integration},
+        ):
+            reviewer._report_sprachschloss_answer(summary, 12.5)
+
+        self.assertEqual(calls, [(summary, 12.5)])
+
+    def test_sprachschloss_reporting_never_breaks_contextual_review(self) -> None:
+        package = ModuleType("sprachschloss")
+        package.__path__ = []
+        integration = ModuleType("sprachschloss.integration")
+        integration.report_contextual_review = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("bridge unavailable")
+        )
+
+        with patch.dict(
+            sys.modules,
+            {"sprachschloss": package, "sprachschloss.integration": integration},
+        ):
+            reviewer._report_sprachschloss_answer(SimpleNamespace(), 1.0)
 
     def test_rendering_task_auto_reads_sentence_when_enabled(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -63,6 +104,24 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         self.assertEqual(len(scripts), 1)
         self.assertIn("window.contextualPageReady", scripts[0])
+
+    def test_web_notification_failures_are_logged(self) -> None:
+        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog.web = SimpleNamespace(
+            eval=lambda _script: (_ for _ in ()).throw(RuntimeError("webview closed"))
+        )
+        events = []
+
+        with patch.object(
+            reviewer,
+            "append_debug_log",
+            side_effect=lambda event, **fields: events.append((event, fields)),
+        ):
+            dialog._notify_tts_finished("")
+
+        self.assertEqual(events[0][0], "web_notification_error")
+        self.assertEqual(events[0][1]["function"], "contextualTtsFinished")
+        self.assertEqual(events[0][1]["error"], "webview closed")
 
     def test_rendering_recall_task_prepares_audio_without_playing(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -119,11 +178,10 @@ class ReviewerBridgeTests(unittest.TestCase):
             def run_in_background(self, work, done) -> None:
                 self.calls.append((work, done))
 
-        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog = self._new_tts_dialog()
         dialog.config = normalize_config({})
         dialog.active_task = self._recall_task()
         dialog._revealed_sentence_id = 7
-        dialog._tts_sentence_ids_in_flight = set()
         taskman = HoldingTaskman()
         dialog.mw = SimpleNamespace(taskman=taskman)
 
@@ -138,12 +196,12 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog._tts_sentence_ids_in_flight, set())
 
     def test_prepared_recall_audio_plays_immediately_after_reveal(self) -> None:
-        dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
+        dialog = self._new_tts_dialog()
         dialog.config = normalize_config({})
         dialog.active_task = self._recall_task()
         dialog._revealed_sentence_id = 7
         prepared_path = Path("prepared.mp3")
-        dialog._tts_ready_paths = {7: prepared_path}
+        dialog._tts_ready_paths[7] = prepared_path
         played = []
         finished = []
         dialog._play_tts_path = played.append
@@ -668,15 +726,24 @@ class ReviewerBridgeTests(unittest.TestCase):
         from contextual_review import translation
 
         original = translation.translate_text
+        events = []
         try:
             translation.translate_text = lambda *args: (_ for _ in ()).throw(
                 TimeoutError("request timed out")
             )
-            dialog._request_translation("Какими навыками?", "sentence", 4)
+            with patch.object(
+                reviewer,
+                "append_debug_log",
+                side_effect=lambda event, **fields: events.append((event, fields)),
+            ):
+                dialog._request_translation("Какими навыками?", "sentence", 4)
         finally:
             translation.translate_text = original
 
-        self.assertIn("Automatic translation timed out", scripts[0])
+        self.assertIn("translation service timed out", scripts[0])
+        completed = [fields for event, fields in events if event == "translation_request_done"]
+        self.assertEqual(completed[0]["error_type"], "TimeoutError")
+        self.assertEqual(completed[0]["error_detail"], "request timed out")
 
     def test_submit_only_suppresses_known_cards_in_current_window(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
@@ -720,8 +787,8 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(dialog.learning_card_ids, {10})
         self.assertEqual(dialog.review_history[0][1], [10, 20])
         self.assertEqual(dialog._session_forgotten_words, [["review"]])
-        self.assertIn("window.contextualProgressChanged(1, 1, 2);", scripts)
-        self.assertIn("window.contextualSetUndoAvailable(true);", scripts)
+        self.assertIn("window.contextualProgressChanged(...[1, 1, 2]);", scripts)
+        self.assertIn("window.contextualSetUndoAvailable(...[true]);", scripts)
         self.assertIsNone(dialog._due_cards_cache)
         self.assertEqual(loads, [True])
 
@@ -821,7 +888,7 @@ class ReviewerBridgeTests(unittest.TestCase):
             card_ids_by_key={"review": [10]},
         )
         dialog.config = normalize_config({})
-        dialog.review_history = [(task, [10], None)]
+        dialog.review_history = [(task, [10], None, set(), set())]
         dialog.answered_card_ids = {10, 20}
         dialog.active_task = None
         dialog._selection_generation = 4
@@ -902,7 +969,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
         marker = reviewer.AnkiUndoMarker(last_step=42, label="Contextual Review")
-        dialog.review_history = [(task, [10], marker)]
+        dialog.review_history = [(task, [10], marker, set(), set())]
         dialog.answered_card_ids = {10}
         dialog.active_task = None
         dialog.config = normalize_config({})
@@ -925,7 +992,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog._undo_last_review()
 
         self.assertFalse(dialog.mw.col.undo_called)
-        self.assertEqual(dialog.review_history, [(task, [10], marker)])
+        self.assertEqual(dialog.review_history, [(task, [10], marker, set(), set())])
         self.assertIn("another Anki action happened afterward", rendered[-1])
 
     def test_regrading_previous_sentence_resumes_interrupted_sentence(self) -> None:
@@ -937,7 +1004,7 @@ class ReviewerBridgeTests(unittest.TestCase):
             2, "en", "Keep this sentence.", None, [], {"keep": [20]}
         )
         dialog.config = normalize_config({})
-        dialog.review_history = [(previous_task, [10], None)]
+        dialog.review_history = [(previous_task, [10], None, set(), set())]
         dialog.answered_card_ids = {10}
         dialog.active_task = interrupted_task
         rendered = []
@@ -1019,7 +1086,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertEqual(
             shown,
             [
-                "Session complete\n\nReviewed 3 cards across 1 sentence. "
+                "Session ended\n\nReviewed 3 cards across 1 sentence. "
                 "Remembered: 2. Forgotten: 1."
             ],
         )
@@ -1236,13 +1303,13 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         original_collect = reviewer.collect_due_cards
         original_select = reviewer.select_review_task
-        original_migrate = reviewer.migrate_database
+        original_initialize = reviewer.initialize_database
         try:
             reviewer.collect_due_cards = lambda *args, **kwargs: [
                 DueCard(card_id=7, target_word="복습한다", lemma="복습한다")
             ]
             reviewer.select_review_task = lambda *args, **kwargs: task
-            reviewer.migrate_database = lambda path: migration_calls.append(path)
+            reviewer.initialize_database = lambda path: migration_calls.append(path)
 
             dialog._load_next_task()
             dialog.active_task = None
@@ -1250,7 +1317,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         finally:
             reviewer.collect_due_cards = original_collect
             reviewer.select_review_task = original_select
-            reviewer.migrate_database = original_migrate
+            reviewer.initialize_database = original_initialize
 
         self.assertEqual(migration_calls, [dialog.db_path])
 
@@ -1305,7 +1372,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         dialog.recent_sentence_ids = set()
         dialog.answered_card_ids = set()
         reviewed_task = ReviewTask(1, "en", "Review this.", None, [], {"review": [7]})
-        dialog.review_history = [(reviewed_task, [7], None)]
+        dialog.review_history = [(reviewed_task, [7], None, set(), set())]
         dialog.active_task = None
         dialog._loading = False
         dialog._due_cards_cache = (

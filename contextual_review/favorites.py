@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .config import addon_user_root
+from .json_state import read_json_state, write_json_state
 from .language_profiles import normalize_language_code
 
 
@@ -92,22 +92,8 @@ def _favorites_file() -> Path:
 
 
 def _read_payload() -> Dict[str, Any]:
-    path = _favorites_file()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"version": 1, "favorites": {}}
-    if not isinstance(payload, dict) or not isinstance(payload.get("favorites"), dict):
-        return {"version": 1, "favorites": {}}
-    return payload
+    return read_json_state(_favorites_file(), "favorites")
 
 
 def _write_payload(payload: Dict[str, Any]) -> None:
-    path = _favorites_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    write_json_state(_favorites_file(), payload)

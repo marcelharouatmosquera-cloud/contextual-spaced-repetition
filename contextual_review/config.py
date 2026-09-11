@@ -68,6 +68,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
+class ConfigLoadError(RuntimeError):
+    """Raised when Anki's stored add-on configuration cannot be read safely."""
+
+
 @dataclass(frozen=True)
 class SolutionFieldConfig:
     field: str
@@ -133,15 +137,12 @@ def load_config(mw: Optional[Any], addon_name: str, deck_name: Optional[str] = N
     raw = dict(DEFAULT_CONFIG)
     addon_config: Dict[str, Any] = {}
     if mw is not None:
-        try:
-            addon_config = mw.addonManager.getConfig(addon_name) or {}
-            raw.update(addon_config)
-            if "custom_search_query" not in addon_config and "search_query" in addon_config:
-                raw["custom_search_query"] = addon_config["search_query"]
-            if "solution_fields" not in addon_config:
-                raw["solution_fields"] = []
-        except Exception:
-            pass
+        addon_config = load_raw_config(mw, addon_name)
+        raw.update(addon_config)
+        if "custom_search_query" not in addon_config and "search_query" in addon_config:
+            raw["custom_search_query"] = addon_config["search_query"]
+        if "solution_fields" not in addon_config:
+            raw["solution_fields"] = []
 
     raw = apply_active_deck_config(raw, mw, deck_name=deck_name)
     config = normalize_config(raw)
@@ -149,6 +150,22 @@ def load_config(mw: Optional[Any], addon_name: str, deck_name: Optional[str] = N
         _migrate_legacy_default_database()
         _write_migrated_database_config(mw, addon_name, addon_config)
     return config
+
+
+def load_raw_config(mw: Any, addon_name: str) -> Dict[str, Any]:
+    """Read and validate Anki's stored JSON object without applying defaults."""
+    try:
+        stored_config = mw.addonManager.getConfig(addon_name)
+    except Exception as exc:
+        raise ConfigLoadError(
+            "Could not read Contextual Review settings from Anki: %s" % exc
+        ) from exc
+    if stored_config is not None and not isinstance(stored_config, dict):
+        raise ConfigLoadError(
+            "Contextual Review settings are invalid: expected a JSON object, got %s."
+            % type(stored_config).__name__
+        )
+    return dict(stored_config or {})
 
 
 def normalize_config(raw: Dict[str, Any]) -> ContextConfig:

@@ -1,0 +1,24 @@
+name: Report a bug
+description: Tell us what went wrong with Contextual Review.
+title: ""
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem! Reports are public. Please don't include private cards, API keys, or personal information.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What went wrong?
+      description: Tell us what you were doing and what happened. A screenshot or error message is helpful, but optional.
+      placeholder: "I clicked ... and expected ... but ..."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version info
+      description: Filled in automatically when you use Report a bug in Anki. Otherwise, paste Copy version info from Version / About if possible.
+      render: text
+    validations:
+      required: false

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,28 @@ from contextual_review.types import ReviewTask, TargetWordDefinition
 
 
 class FavoriteTests(unittest.TestCase):
+    def test_corrupt_favorites_are_preserved_before_a_clean_file_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            previous = os.environ.get(USER_ROOT_ENV)
+            os.environ[USER_ROOT_ENV] = tempdir
+            try:
+                state_path = Path(tempdir) / "user_files" / "favorite_sentences.json"
+                state_path.parent.mkdir(parents=True)
+                state_path.write_text('{"favorites": ', encoding="utf-8")
+                task = ReviewTask(7, "de", "Das ist gut.", "That is good.", [], {})
+
+                self.assertTrue(toggle_favorite_sentence(Path(tempdir) / "sentences.db", task))
+
+                backups = list(state_path.parent.glob("favorite_sentences.json.corrupt-*"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_text(encoding="utf-8"), '{"favorites": ')
+                self.assertEqual(len(json.loads(state_path.read_text(encoding="utf-8"))["favorites"]), 1)
+            finally:
+                if previous is None:
+                    os.environ.pop(USER_ROOT_ENV, None)
+                else:
+                    os.environ[USER_ROOT_ENV] = previous
+
     def test_favorite_persists_snapshot_and_toggles(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             previous = os.environ.get(USER_ROOT_ENV)

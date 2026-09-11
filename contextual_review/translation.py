@@ -12,6 +12,11 @@ from .language_profiles import normalize_language_code
 
 TRANSLATION_CONNECT_TIMEOUT_SECONDS = 4
 TRANSLATION_READ_TIMEOUT_SECONDS = 8
+TRANSLATION_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/140.0.0.0 Safari/537.36"
+)
 
 
 class _RequestsTimeoutProxy:
@@ -23,6 +28,12 @@ class _RequestsTimeoutProxy:
         self._requests_module = requests_module
 
     def get(self, *args: Any, **kwargs: Any) -> Any:
+        headers = dict(kwargs.get("headers") or {})
+        if not any(str(name).casefold() == "user-agent" for name in headers):
+            # Google currently serves an embedded Error 500 page to the
+            # default python-requests identity used by deep-translator 1.11.4.
+            headers["User-Agent"] = TRANSLATION_USER_AGENT
+        kwargs["headers"] = headers
         kwargs.setdefault(
             "timeout",
             (TRANSLATION_CONNECT_TIMEOUT_SECONDS, TRANSLATION_READ_TIMEOUT_SECONDS),

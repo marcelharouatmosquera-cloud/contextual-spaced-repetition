@@ -10,6 +10,7 @@ from .config import (
     DEFAULT_CONFIG,
     deck_config_name,
     load_config,
+    load_raw_config,
     normalize_config,
     resolve_database_path,
     upsert_deck_config,
@@ -41,47 +42,6 @@ WORD_FORMS_FILE_FILTER = (
 )
 
 DATABASE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
-
-INSTRUCTIONS_TEXT = (
-    "Contextual Review: Quick Guide\n\n"
-    "Safe to try\n"
-    "- The add-on does not create, move, edit, or delete your decks or notes.\n"
-    "- It reviews cards from the deck and study options you choose.\n"
-    "- Opening the add-on, changing settings, or importing sentences does not schedule any cards.\n"
-    "- Cards are scheduled only when you press Grade & Next: forgotten words receive Again and the rest receive Good.\n"
-    "- Ctrl+Z immediately undoes the last contextual review batch.\n\n"
-    "First-time setup\n"
-    "1. Open Settings and choose the deck you want to configure.\n"
-    "2. In Basic Setup, choose both languages, then let Auto-Configure map fields and recognition/recall templates.\n"
-    "3. Choose whether to review due cards, learn new cards, or include learning cards.\n"
-    "4. Most people can leave Advanced / Nerd Settings unchanged.\n"
-    "5. Add example sentences from the Sentence Library, or use Advanced settings to import your own file.\n"
-    "6. Run Diagnostics. If every required check is OK, choose Start Review.\n\n"
-    "One review, step by step\n"
-    "1. Recognition cards show the target word highlighted. Recall cards replace it with a blank and a native-language hint.\n"
-    "2. For recall, produce the missing target-language word mentally or aloud.\n"
-    "3. Choose Show Solution, or press Space/Enter, to reveal the missing word, translation, definitions, and interval previews.\n"
-    "4. Click only the words you did not remember after they are revealed. Leave remembered words unclicked.\n"
-    "5. Choose Grade & Next, or press Space/Enter again, to submit the answers and continue.\n"
-    "6. If you made a mistake, press Ctrl+Z before continuing.\n\n"
-    "Sentence sources\n"
-    "- The Sentence Library is the easiest starting point. It shows the current count and imports more when requested.\n"
-    "- If Target language and Native language differ, linked Tatoeba translations are added when available.\n"
-    "- Advanced settings can import .txt, .srt, .tsv, .csv, and .bz2 files. Good sources include subtitles and sentence lists you have permission to use.\n"
-    "- A word list alone is not enough; the add-on needs complete sentences.\n"
-    "- The sentence database is separate from your Anki collection. Maintenance controls remove sentences, never cards.\n\n"
-    "Optional word forms\n"
-    "- Use Import Word Forms when a sentence form should match a base word, such as went -> go or Hunde -> Hund.\n"
-    "- Use two columns: sentence form first, base card word second.\n"
-    "went\tgo\n"
-    "eating\teat\n"
-    "\u0434\u043e\u043c\u0430\t\u0434\u043e\u043c\n"
-    "- Lemma family matching is enabled by default.\n\n"
-    "Useful shortcuts\n"
-    "- Space or Enter: show the solution, then submit.\n"
-    "- 1 to 9: mark the corresponding target word as forgotten.\n"
-    "- Ctrl+Z: undo the last submitted batch."
-)
 
 INSTRUCTIONS_HTML = """
 <style>
@@ -270,7 +230,7 @@ def _open_settings_editor_dialog(
         showWarning("Choose a deck before editing Contextual Review settings.")
         return
 
-    raw = _raw_config(mw, addon_name)
+    raw = load_raw_config(mw, addon_name)
     config = load_config(mw, addon_name, deck_name=target_deck_name)
     available_fields = _available_note_fields(mw, "configured", target_deck_name)
 
@@ -919,53 +879,36 @@ def _open_settings_editor_dialog(
             after_done=refresh_library_count,
         )
 
-    def import_custom_sentence_file() -> None:
+    def import_selected_file(
+        dialog_title: str,
+        file_filter: str,
+        progress_title: str,
+        importer: Any,
+        done_message: Any,
+        after_done: Any = None,
+    ) -> None:
         from aqt.qt import QFileDialog
 
         path, _selected_filter = QFileDialog.getOpenFileName(
             dialog,
-            "Choose Sentence Corpus File",
+            dialog_title,
             "",
-            SENTENCE_FILE_FILTER,
+            file_filter,
         )
         if not path:
             return
         import_config = current_library_config(library_target.value())
         _run_background(
             mw,
-            "Importing contextual corpus...",
-            lambda progress: import_corpus_file(
+            progress_title,
+            lambda progress: importer(
                 Path(path),
                 import_config,
                 replace=False,
                 progress=progress,
             ),
-            _corpus_import_done_message,
-            after_done=refresh_library_count,
-        )
-
-    def import_word_form_file() -> None:
-        from aqt.qt import QFileDialog
-
-        path, _selected_filter = QFileDialog.getOpenFileName(
-            dialog,
-            "Choose Word-Forms File",
-            "",
-            WORD_FORMS_FILE_FILTER,
-        )
-        if not path:
-            return
-        import_config = current_library_config(library_target.value())
-        _run_background(
-            mw,
-            "Importing word forms...",
-            lambda progress: import_word_forms_file(
-                Path(path),
-                import_config,
-                replace=False,
-                progress=progress,
-            ),
-            _word_forms_import_done_message,
+            done_message,
+            after_done=after_done,
         )
 
     def delete_entire_sentence_database() -> None:
@@ -1002,8 +945,25 @@ def _open_settings_editor_dialog(
     import_more.clicked.connect(import_more_sentences)
     delete_some.clicked.connect(lambda: delete_library_sentences(False))
     delete_all.clicked.connect(lambda: delete_library_sentences(True))
-    import_custom_button.clicked.connect(import_custom_sentence_file)
-    import_forms_button.clicked.connect(import_word_form_file)
+    import_custom_button.clicked.connect(
+        lambda: import_selected_file(
+            "Choose Sentence Corpus File",
+            SENTENCE_FILE_FILTER,
+            "Importing contextual corpus...",
+            import_corpus_file,
+            _corpus_import_done_message,
+            refresh_library_count,
+        )
+    )
+    import_forms_button.clicked.connect(
+        lambda: import_selected_file(
+            "Choose Word-Forms File",
+            WORD_FORMS_FILE_FILTER,
+            "Importing word forms...",
+            import_word_forms_file,
+            _word_forms_import_done_message,
+        )
+    )
     delete_database_button.clicked.connect(delete_entire_sentence_database)
     refresh_library_count()
 
@@ -1143,16 +1103,42 @@ def show_instructions_dialog(mw: Any, addon_name: str) -> None:  # pragma: no co
         open_settings_dialog(mw, addon_name)
 
 
-def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma: no cover - Anki UI
-    from aqt.qt import (
-        QDialog,
-        QDialogButtonBox,
-        QHBoxLayout,
-        QListWidget,
-        QPushButton,
-        QTextBrowser,
-        QVBoxLayout,
+def _sentence_browser_shell(mw: Any, title: str):  # pragma: no cover - Anki UI
+    from aqt.qt import QDialog, QHBoxLayout, QListWidget, QTextBrowser, QVBoxLayout
+
+    dialog = QDialog(mw)
+    dialog.setWindowTitle(title)
+    dialog.resize(820, 560)
+    layout = QVBoxLayout(dialog)
+    content = QHBoxLayout()
+    sentence_list = QListWidget()
+    details = QTextBrowser()
+    content.addWidget(sentence_list, 2)
+    content.addWidget(details, 3)
+    layout.addLayout(content, 1)
+    return dialog, layout, sentence_list, details
+
+
+def _show_sentence_browser(dialog: Any, layout: Any) -> None:  # pragma: no cover - Anki UI
+    from aqt.qt import QDialogButtonBox
+
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    dialog.exec()
+
+
+def _sentence_details_html(item: Dict[str, Any], extra_html: str = "") -> str:
+    translation = _escape_html(item.get("translation", "")) or "No stored translation."
+    return "<h2>%s</h2><p><b>Translation:</b> %s</p>%s" % (
+        _escape_html(item.get("text", "")),
+        translation,
+        extra_html,
     )
+
+
+def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma: no cover - Anki UI
+    from aqt.qt import QHBoxLayout, QPushButton
     from aqt.utils import showInfo, showWarning
 
     config = load_config(mw, addon_name)
@@ -1163,16 +1149,9 @@ def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma:
     profile = load_language_profiles().get(config.language)
     language_name = profile.name if profile and profile.name else config.language.upper()
 
-    dialog = QDialog(mw)
-    dialog.setWindowTitle("Favorite Sentences: %s" % language_name)
-    dialog.resize(820, 560)
-    layout = QVBoxLayout(dialog)
-    content = QHBoxLayout()
-    sentence_list = QListWidget()
-    details = QTextBrowser()
-    content.addWidget(sentence_list, 2)
-    content.addWidget(details, 3)
-    layout.addLayout(content, 1)
+    dialog, layout, sentence_list, details = _sentence_browser_shell(
+        mw, "Favorite Sentences: %s" % language_name
+    )
 
     saved: list[Dict[str, Any]] = []
 
@@ -1193,13 +1172,12 @@ def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma:
             for word in item.get("target_words", [])
             if isinstance(word, dict)
         )
-        translation = _escape_html(item.get("translation", "")) or "No stored translation."
         details.setHtml(
-            "<h2>%s</h2><p><b>Translation:</b> %s</p>%s"
-            % (
-                _escape_html(item.get("text", "")),
-                translation,
-                "<h3>Target Words</h3><ul>%s</ul>" % target_rows if target_rows else "",
+            _sentence_details_html(
+                item,
+                "<h3>Target Words</h3><ul>%s</ul>" % target_rows
+                if target_rows
+                else "",
             )
         )
 
@@ -1260,10 +1238,7 @@ def show_favorite_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma:
     buttons_row.addStretch(1)
     layout.addLayout(buttons_row)
 
-    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-    buttons.rejected.connect(dialog.reject)
-    layout.addWidget(buttons)
-    dialog.exec()
+    _show_sentence_browser(dialog, layout)
 
 
 def recent_sentence_records(
@@ -1311,31 +1286,15 @@ def recent_sentence_records(
 
 
 def show_recent_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma: no cover - Anki UI
-    from aqt.qt import (
-        QDialog,
-        QDialogButtonBox,
-        QHBoxLayout,
-        QListWidget,
-        QTextBrowser,
-        QVBoxLayout,
-    )
-
     config = load_config(mw, addon_name)
     database_path = resolve_database_path(config)
     profile = load_language_profiles().get(config.language)
     language_name = profile.name if profile and profile.name else config.language.upper()
     recent = recent_sentence_records(database_path, config.language, limit=100)
 
-    dialog = QDialog(mw)
-    dialog.setWindowTitle("Last 100 Sentences: %s" % language_name)
-    dialog.resize(820, 560)
-    layout = QVBoxLayout(dialog)
-    content = QHBoxLayout()
-    sentence_list = QListWidget()
-    details = QTextBrowser()
-    content.addWidget(sentence_list, 2)
-    content.addWidget(details, 3)
-    layout.addLayout(content, 1)
+    dialog, layout, sentence_list, details = _sentence_browser_shell(
+        mw, "Last 100 Sentences: %s" % language_name
+    )
 
     def render_selected() -> None:
         index = sentence_list.currentRow()
@@ -1343,13 +1302,10 @@ def show_recent_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma: n
             details.setHtml("<p>Select a recent sentence to review it.</p>")
             return
         item = recent[index]
-        translation = _escape_html(item.get("translation", "")) or "No stored translation."
         source = _escape_html(item.get("source", ""))
         details.setHtml(
-            "<h2>%s</h2><p><b>Translation:</b> %s</p>%s"
-            % (
-                _escape_html(item.get("text", "")),
-                translation,
+            _sentence_details_html(
+                item,
                 "<p><b>Source:</b> %s</p>" % source if source else "",
             )
         )
@@ -1365,10 +1321,7 @@ def show_recent_sentences_dialog(mw: Any, addon_name: str) -> None:  # pragma: n
             "<p>Sentences will appear here after they are shown in Contextual Review.</p>"
         )
 
-    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-    buttons.rejected.connect(dialog.reject)
-    layout.addWidget(buttons)
-    dialog.exec()
+    _show_sentence_browser(dialog, layout)
 
 
 def _run_background(mw: Any, title: str, work, done_message, after_done=None) -> None:
@@ -1486,13 +1439,6 @@ def delete_sentence_registry_file(config: Any) -> Tuple[Path, bool]:
         except FileNotFoundError:
             pass
     return db_path, True
-
-
-def _raw_config(mw: Any, addon_name: str) -> Dict[str, Any]:
-    try:
-        return dict(mw.addonManager.getConfig(addon_name) or {})
-    except Exception:
-        return dict(DEFAULT_CONFIG)
 
 
 def _global_config(raw: Dict[str, Any]) -> Dict[str, Any]:

@@ -11,8 +11,9 @@ from urllib.parse import quote, unquote, urlsplit
 
 from .anki_bridge import answer_review_task, collect_due_cards
 from .config import addon_user_root, load_config, resolve_database_path
-from .corpus import migrate_database, select_review_task
+from .corpus import initialize_database, select_review_task
 from .debug_log import append_debug_log
+from .json_state import read_json_state, write_json_state
 from .normalizer import is_unsegmented_language
 from .types import DueCard, ReviewTask
 from .web import render_message_html, render_task_html
@@ -24,6 +25,20 @@ DEFAULT_REVIEW_WINDOW_SIZE = (1200, 760)
 REVIEW_WINDOW_SCREEN_FRACTION = (0.92, 0.88)
 
 
+def _report_sprachschloss_answer(summary: Any, review_seconds: float) -> None:
+    """Optionally report a completed native grade transaction.
+
+    Sprachschloss is deliberately a soft dependency: this review window must
+    remain usable when its companion add-on is absent, disabled, or damaged.
+    """
+    try:
+        from sprachschloss.integration import report_contextual_review
+
+        report_contextual_review(summary, review_seconds=max(0.0, float(review_seconds)))
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class AnkiUndoMarker:
     last_step: int
@@ -31,14 +46,7 @@ class AnkiUndoMarker:
 
 
 ReviewUndoHandle = Optional[AnkiUndoMarker]
-
-
-def _history_entry_parts(entry: Any) -> Tuple[ReviewTask, List[int], ReviewUndoHandle, Set[int], Set[int]]:
-    """Read current history rows while tolerating pre-upgrade three-part rows."""
-    task, answered_card_ids, undo_handle = entry[:3]
-    previous_completed = set(entry[3]) if len(entry) > 3 else set()
-    previous_learning = set(entry[4]) if len(entry) > 4 else set()
-    return task, list(answered_card_ids), undo_handle, previous_completed, previous_learning
+ReviewHistoryEntry = Tuple[ReviewTask, List[int], ReviewUndoHandle, Set[int], Set[int]]
 
 
 def open_contextual_review_dialog(mw: Any, addon_name: str) -> "ContextualReviewDialog":  # pragma: no cover
@@ -86,9 +94,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         # due-card filtering throughout this controller.
         self.answered_card_ids: Set[int] = set()
         self.learning_card_ids: Set[int] = set()
-        self.review_history: List[
-            Tuple[ReviewTask, List[int], ReviewUndoHandle, Set[int], Set[int]]
-        ] = []
+        self.review_history: List[ReviewHistoryEntry] = []
         self._mining_undo_markers: List[AnkiUndoMarker] = []
         self._mined_card_ids_by_undo_step: Dict[int, Tuple[int, ...]] = {}
         self._queued_mined_due_card_batches: List[Tuple[DueCard, ...]] = []
@@ -127,14 +133,10 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         layout = QVBoxLayout()
         layout.addWidget(self.web)
         self._dialog.setLayout(layout)
-        self._set_html(
-            render_message_html(
-                "Preparing contextual review",
-                "Finding due cards and a useful sentence...",
-                dark_mode=self._dark_mode(),
-                font_size=self.config.font_size,
-                show_refresh=False,
-            )
+        self._show_message(
+            "Preparing contextual review",
+            "Finding due cards and a useful sentence...",
+            show_refresh=False,
         )
 
     def _resize_for_available_screen(self) -> None:
@@ -174,33 +176,25 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         if getattr(self, "_loading", False):
             return
         if getattr(self, "database_path_error", ""):
-            self._set_html(
-                render_message_html(
-                    "Database path needs attention",
-                    self.database_path_error,
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Open Settings",
-                    action="settings",
-                    extra_actions=(("Diagnostics", "diagnostics"),),
-                )
+            self._show_message(
+                "Database path needs attention",
+                self.database_path_error,
+                "Open Settings",
+                "settings",
+                (("Diagnostics", "diagnostics"),),
             )
             return
         if not self.db_path.exists():
-            self._set_html(
-                render_message_html(
-                    "Sentence database missing",
-                    (
-                        "No sentence database was found at %s. "
-                        "Open Contextual Review Settings and use the Sentence Library section."
-                    )
-                    % self.db_path,
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Open Settings",
-                    action="settings",
-                    extra_actions=(("Diagnostics", "diagnostics"),),
+            self._show_message(
+                "Sentence database missing",
+                (
+                    "No sentence database was found at %s. "
+                    "Open Contextual Review Settings and use the Sentence Library section."
                 )
+                % self.db_path,
+                "Open Settings",
+                "settings",
+                (("Diagnostics", "diagnostics"),),
             )
             return
 
@@ -234,8 +228,9 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             cached_reviewed_card_ids = (
                 {
                     card_id
-                    for entry in getattr(self, "review_history", [])
-                    for card_ids in (_history_entry_parts(entry)[1],)
+                    for _task, card_ids, _undo, _completed, _learning in getattr(
+                        self, "review_history", []
+                    )
                     for card_id in card_ids
                 }
                 if cache_hit
@@ -266,16 +261,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 cache_hit=cache_hit,
             )
         except Exception as exc:
-            self._set_html(
-                render_message_html(
-                    "Could not read due cards",
-                    str(exc),
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Diagnostics",
-                    action="diagnostics",
-                )
-            )
+            self._show_message("Could not read due cards", str(exc), "Diagnostics", "diagnostics")
             return
 
         if not due_cards and cache_hit:
@@ -296,17 +282,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             summary = self._session_summary_text()
             if summary:
                 self._session_summary_shown = True
-            self._set_html(
-                render_message_html(
-                    "Session complete" if summary else "All done",
-                    summary
-                    or "No due vocabulary cards were found. If this seems wrong, run Diagnostics to check the search filter and card direction settings.",
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Standard Reviews" if summary else "Diagnostics",
-                    action="standard_review" if summary else "diagnostics",
-                    extra_actions=(("Diagnostics", "diagnostics"),) if summary else None,
-                )
+            self._show_message(
+                "Nothing due right now",
+                ((summary + "\n\n") if summary else "")
+                + "No eligible vocabulary cards are due right now in this review scope. "
+                "Learning or relearning cards can return when their next step is due; "
+                "that does not mean your earlier answers were lost. "
+                "Use Refresh to check again. Other card types or decks may still have work in standard Anki reviews.",
+                "Standard Reviews" if summary else "Diagnostics",
+                "standard_review" if summary else "diagnostics",
+                (("Diagnostics", "diagnostics"),) if summary else None,
             )
             return
 
@@ -328,7 +313,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             selection_started = time.perf_counter()
             if migrate_before_selection:
                 try:
-                    migrate_database(self.db_path)
+                    initialize_database(self.db_path)
                 except Exception:
                     self._database_migration_pending = True
                     raise
@@ -372,19 +357,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return task
 
-        taskman = getattr(getattr(self, "mw", None), "taskman", None)
+        taskman = getattr(self.mw, "taskman", None)
         if taskman is not None and callable(getattr(taskman, "run_in_background", None)):
             self._loading = True
             self.active_task = None
             if not getattr(self, "review_history", []):
-                self._set_html(
-                    render_message_html(
-                        "Finding a useful sentence",
-                        "You can keep using Anki while the local corpus is searched.",
-                        dark_mode=self._dark_mode(),
-                        font_size=self.config.font_size,
-                        show_refresh=False,
-                    )
+                self._show_message(
+                    "Finding a useful sentence",
+                    "You can keep using Anki while the local corpus is searched.",
+                    show_refresh=False,
                 )
             else:
                 self._notify_selection_pending()
@@ -433,27 +414,20 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._loading = False
 
     def _on_dialog_finished(self, _result: Any = None) -> None:
+        self._closed = True
+        getattr(self, "_tts_play_when_ready", set()).clear()
         self._invalidate_pending_selection()
         summary = self._session_summary_text()
         if not summary or getattr(self, "_session_summary_shown", False):
             return
         self._session_summary_shown = True
-        self._show_info("Session complete\n\n%s" % summary)
+        self._show_info("Session ended\n\n%s" % summary)
 
     def _show_task_selection_error(self, exc: Exception) -> None:
         self._loading = False
         self.active_task = None
         append_debug_log("review_task_selection_error", error=str(exc))
-        self._set_html(
-            render_message_html(
-                "No sentence could be selected",
-                str(exc),
-                dark_mode=self._dark_mode(),
-                font_size=self.config.font_size,
-                action_label="Diagnostics",
-                action="diagnostics",
-            )
-        )
+        self._show_message("No sentence could be selected", str(exc), "Diagnostics", "diagnostics")
 
     def _show_task(
         self,
@@ -469,16 +443,12 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 self._load_next_task(refresh_due_cards=True)
                 return
             self.active_task = None
-            self._set_html(
-                render_message_html(
-                    "No matching sentence",
-                    "No matching contextual sentences were found for your due words. Run Diagnostics, import more sentences, or switch to standard Anki reviews.",
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Diagnostics",
-                    action="diagnostics",
-                    extra_actions=(("Standard Reviews", "standard_review"),),
-                )
+            self._show_message(
+                "No matching sentence",
+                "No matching contextual sentences were found for your due words. Run Diagnostics, import more sentences, or switch to standard Anki reviews.",
+                "Diagnostics",
+                "diagnostics",
+                (("Standard Reviews", "standard_review"),),
             )
             return
 
@@ -577,18 +547,22 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 unknown_card_ids=unknown_card_ids,
             )
         except Exception as exc:
-            self._set_html(
-                render_message_html(
-                    "Could not grade cards",
-                    str(exc),
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Diagnostics",
-                    action="diagnostics",
-                    extra_actions=(("Standard Reviews", "standard_review"),),
-                )
+            self._show_message(
+                "Could not grade cards",
+                str(exc),
+                "Diagnostics",
+                "diagnostics",
+                (("Standard Reviews", "standard_review"),),
             )
             return
+
+        question_started = getattr(self, "_sprachschloss_question_started", None)
+        review_seconds = (
+            max(0.0, time.monotonic() - float(question_started))
+            if question_started is not None
+            else 0.0
+        )
+        _report_sprachschloss_answer(summary, review_seconds)
 
         completed_card_ids = getattr(summary, "completed_card_ids", None)
         if completed_card_ids is None:
@@ -694,9 +668,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._invalidate_pending_selection()
         interrupted_task = self.active_task
         entry = self.review_history.pop()
-        task, answered_card_ids, undo_handle, previous_completed, previous_learning = (
-            _history_entry_parts(entry)
-        )
+        task, answered_card_ids, undo_handle, previous_completed, previous_learning = entry
         try:
             if isinstance(undo_handle, AnkiUndoMarker):
                 _undo_marked_anki_operation(self.mw, undo_handle)
@@ -704,16 +676,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 _undo_last_anki_operation(self.mw)
         except Exception as exc:
             self.review_history.append(entry)
-            self._set_html(
-                render_message_html(
-                    "Could not undo last review",
-                    str(exc),
-                    dark_mode=self._dark_mode(),
-                    font_size=self.config.font_size,
-                    action_label="Diagnostics",
-                    action="diagnostics",
-                )
-            )
+            self._show_message("Could not undo last review", str(exc), "Diagnostics", "diagnostics")
             return
 
         self.answered_card_ids.difference_update(answered_card_ids)
@@ -744,10 +707,12 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         self._render_task(task)
 
     def _render_task(self, task: ReviewTask) -> None:
+        self._page_generation = getattr(self, "_page_generation", 0) + 1
         from .favorites import is_favorite_sentence
 
         # Rendering starts a fresh question phase, including when Previous
         # restores the same sentence that was just on screen.
+        self._sprachschloss_question_started = time.monotonic()
         self._revealed_sentence_id = None
         completed, learning, total = self._today_progress()
         database_path = getattr(self, "db_path", None)
@@ -803,7 +768,13 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
             saved = toggle_favorite_sentence(self.db_path, task)
             self._notify_favorite_changed(saved, "")
-        except Exception:
+        except Exception as exc:
+            append_debug_log(
+                "favorite_update_error",
+                sentence_id=getattr(task, "sentence_id", None),
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             self._notify_favorite_changed(False, "Could not update sentence favorites.")
 
     def _mine_word(
@@ -1112,66 +1083,38 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             if not any(int(card.card_id) in removed_ids for card in batch)
         ]
 
+    def _call_web(self, function_name: str, *args: Any) -> None:
+        arguments = json.dumps(list(args), ensure_ascii=False).replace("</", "<\\/")
+        try:
+            self.web.eval("window.%s(...%s);" % (function_name, arguments))
+        except Exception as exc:
+            append_debug_log(
+                "web_notification_error",
+                function=function_name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+
     def _notify_mining_finished(
         self, success: bool, message: str, reused: bool = False
     ) -> None:
-        try:
-            self.web.eval(
-                "window.contextualMineFinished(%s, %s, %s);"
-                % (
-                    "true" if success else "false",
-                    json.dumps(str(message or ""), ensure_ascii=False),
-                    "true" if reused else "false",
-                )
-            )
-        except Exception:
-            pass
+        self._call_web("contextualMineFinished", success, str(message or ""), reused)
 
     def _notify_mining_undone(self, message: str) -> None:
-        try:
-            self.web.eval(
-                "window.contextualMineUndone(%s);"
-                % json.dumps(str(message or ""), ensure_ascii=False)
-            )
-        except Exception:
-            pass
+        self._call_web("contextualMineUndone", str(message or ""))
 
     def _notify_favorite_changed(self, saved: bool, error: str) -> None:
-        try:
-            self.web.eval(
-                "window.contextualFavoriteChanged(%s, %s);"
-                % (
-                    "true" if saved else "false",
-                    json.dumps(str(error or ""), ensure_ascii=False),
-                )
-            )
-        except Exception:
-            pass
+        self._call_web("contextualFavoriteChanged", saved, str(error or ""))
 
     def _notify_selection_pending(self) -> None:
-        try:
-            self.web.eval("window.contextualSelectionPending();")
-        except Exception:
-            pass
+        self._call_web("contextualSelectionPending")
 
     def _notify_undo_available(self, available: bool) -> None:
-        try:
-            self.web.eval(
-                "window.contextualSetUndoAvailable(%s);"
-                % ("true" if available else "false")
-            )
-        except Exception:
-            pass
+        self._call_web("contextualSetUndoAvailable", available)
 
     def _notify_progress_changed(self) -> None:
         completed, learning, total = self._today_progress()
-        try:
-            self.web.eval(
-                "window.contextualProgressChanged(%s, %s, %s);"
-                % (completed, learning, total)
-            )
-        except Exception:
-            pass
+        self._call_web("contextualProgressChanged", completed, learning, total)
 
     def _today_progress(self) -> Tuple[int, int, int]:
         goal_ids = set(getattr(self, "today_goal_card_ids", set()))
@@ -1220,6 +1163,28 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self.db_path,
             self.config.language,
             sentence_id,
+        )
+
+    def _show_message(
+        self,
+        title: str,
+        message: str,
+        action_label: Optional[str] = None,
+        action: Optional[str] = None,
+        extra_actions: Optional[Tuple[Tuple[str, str], ...]] = None,
+        show_refresh: bool = True,
+    ) -> None:
+        self._set_html(
+            render_message_html(
+                title,
+                message,
+                dark_mode=self._dark_mode(),
+                font_size=self.config.font_size,
+                action_label=action_label,
+                action=action,
+                extra_actions=extra_actions,
+                show_refresh=show_refresh,
+            )
         )
 
     def _set_html(self, html: str) -> None:
@@ -1316,8 +1281,16 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 break
 
     def _request_translation(self, text: str, kind: str, request_id: Any = 0) -> None:
+        if getattr(self, "_closed", False):
+            return
         value = str(text or "").strip()
         translation_kind = "hover" if kind == "hover" else "sentence"
+        requests = getattr(self, "_translation_requests", None)
+        if requests is None:
+            requests = self._translation_requests = {}
+        request_token = object()
+        requests[translation_kind] = request_token
+        page_generation = getattr(self, "_page_generation", 0)
         try:
             numeric_request_id = int(request_id or 0)
         except (TypeError, ValueError):
@@ -1354,9 +1327,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
             return translate_text(value, source_language, target_language)
 
-        def done(future: Any) -> None:
+        def finish(translated_value: Any = "", exc: Optional[Exception] = None) -> None:
             current_task = self.active_task
-            if current_task is None or current_task.sentence_id != sentence_id:
+            if (
+                getattr(self, "_closed", False)
+                or getattr(self, "_page_generation", 0) != page_generation
+                or requests.get(translation_kind) is not request_token
+                or current_task is None
+                or current_task.sentence_id != sentence_id
+            ):
                 append_debug_log(
                     "translation_request_stale",
                     kind=translation_kind,
@@ -1365,12 +1344,10 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                     elapsed_ms=round((time.perf_counter() - started_at) * 1000, 1),
                 )
                 return
-            try:
-                translated = str(future.result() or "").strip()
-                error = "" if translated else "No translation was returned."
-            except Exception as exc:
-                translated = ""
-                error = _friendly_translation_error(exc)
+            translated = str(translated_value or "").strip()
+            error = _friendly_translation_error(exc) if exc else (
+                "" if translated else "No translation was returned."
+            )
             if translation_kind == "sentence" and translated:
                 self.active_task = replace(current_task, translation=translated)
             append_debug_log(
@@ -1381,6 +1358,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000, 1),
                 succeeded=bool(translated and not error),
                 error=error,
+                error_type=type(exc).__name__ if exc else "",
+                error_detail=str(exc or ""),
             )
             self._notify_translation_finished(
                 translation_kind,
@@ -1390,45 +1369,25 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 error,
             )
 
+        def done(future: Any) -> None:
+            try:
+                finish(future.result())
+            except Exception as exc:
+                finish(exc=exc)
+
         taskman = getattr(getattr(self, "mw", None), "taskman", None)
         if taskman is not None and callable(getattr(taskman, "run_in_background", None)):
             try:
                 taskman.run_in_background(translate, done)
                 return
             except Exception as exc:
-                self._notify_translation_finished(
-                    translation_kind,
-                    numeric_request_id,
-                    value,
-                    "",
-                    _friendly_translation_error(exc),
-                )
+                finish(exc=exc)
                 return
 
         try:
-            translated = translate()
-            error = "" if translated else "No translation was returned."
+            finish(translate())
         except Exception as exc:
-            translated = ""
-            error = _friendly_translation_error(exc)
-        if translation_kind == "sentence" and translated and self.active_task is not None:
-            self.active_task = replace(self.active_task, translation=translated)
-        append_debug_log(
-            "translation_request_done",
-            kind=translation_kind,
-            request_id=numeric_request_id,
-            sentence_id=sentence_id,
-            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 1),
-            succeeded=bool(translated and not error),
-            error=error,
-        )
-        self._notify_translation_finished(
-            translation_kind,
-            numeric_request_id,
-            value,
-            translated,
-            error,
-        )
+            finish(exc=exc)
 
     def _notify_translation_finished(
         self,
@@ -1438,14 +1397,14 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         translated_text: str,
         error: str,
     ) -> None:
-        arguments = json.dumps(
-            [kind, request_id, source_text, translated_text, error],
-            ensure_ascii=False,
-        ).replace("</", "<\\/")
-        try:
-            self.web.eval("window.contextualTranslationFinished(...%s);" % arguments)
-        except Exception:
-            pass
+        self._call_web(
+            "contextualTranslationFinished",
+            kind,
+            request_id,
+            source_text,
+            translated_text,
+            error,
+        )
 
     def _play_media(self, source: str) -> None:
         filename = unquote(str(source or "").strip())
@@ -1465,53 +1424,43 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
 
     def _prepare_sentence_tts(self, task: ReviewTask) -> None:
         """Warm the recall audio cache without playing or revealing the answer."""
-        taskman = getattr(getattr(self, "mw", None), "taskman", None)
+        taskman = getattr(self.mw, "taskman", None)
         if taskman is None or not callable(getattr(taskman, "run_in_background", None)):
             return
         sentence_id = task.sentence_id
-        if sentence_id in getattr(self, "_tts_ready_paths", {}):
+        if sentence_id in self._tts_ready_paths:
             return
-        if sentence_id in getattr(self, "_tts_sentence_ids_in_flight", set()):
+        if sentence_id in self._tts_sentence_ids_in_flight:
             return
         self._start_sentence_tts(task)
 
     def _request_sentence_tts(self) -> None:
+        if getattr(self, "_closed", False):
+            return
         task = self.active_task
         if task is None:
             self._notify_tts_finished("There is no sentence to read.")
             return
         if (
             _task_has_recall(task)
-            and getattr(self, "_revealed_sentence_id", None) != task.sentence_id
+            and self._revealed_sentence_id != task.sentence_id
         ):
             self._notify_tts_finished("Show the solution before playing this recall sentence.")
             return
 
         sentence_id = task.sentence_id
-        ready_paths = getattr(self, "_tts_ready_paths", None)
-        if ready_paths is None:
-            ready_paths = {}
-            self._tts_ready_paths = ready_paths
-        ready_path = ready_paths.get(sentence_id)
+        ready_path = self._tts_ready_paths.get(sentence_id)
         if ready_path is not None:
             try:
                 self._play_tts_path(ready_path)
                 self._notify_tts_finished("")
             except Exception as exc:
-                ready_paths.pop(sentence_id, None)
+                self._tts_ready_paths.pop(sentence_id, None)
                 self._notify_tts_finished(_friendly_tts_error(exc))
             return
 
-        play_when_ready = getattr(self, "_tts_play_when_ready", None)
-        if play_when_ready is None:
-            play_when_ready = set()
-            self._tts_play_when_ready = play_when_ready
-        play_when_ready.add(sentence_id)
-        in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
-        if in_flight is None:
-            in_flight = set()
-            self._tts_sentence_ids_in_flight = in_flight
-        if sentence_id in in_flight:
+        self._tts_play_when_ready.add(sentence_id)
+        if sentence_id in self._tts_sentence_ids_in_flight:
             return
         self._start_sentence_tts(task)
 
@@ -1519,11 +1468,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         sentence_id = task.sentence_id
         sentence = task.full_text
         language = task.language or self.config.language
-        in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
-        if in_flight is None:
-            in_flight = set()
-            self._tts_sentence_ids_in_flight = in_flight
-        in_flight.add(sentence_id)
+        self._tts_sentence_ids_in_flight.add(sentence_id)
 
         def generate() -> Path:
             from .tts import synthesize_sentence
@@ -1539,8 +1484,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 )
                 return
             except Exception as exc:
-                in_flight.discard(sentence_id)
-                if sentence_id in getattr(self, "_tts_play_when_ready", set()):
+                self._tts_sentence_ids_in_flight.discard(sentence_id)
+                if sentence_id in self._tts_play_when_ready:
                     self._tts_play_when_ready.discard(sentence_id)
                     self._notify_tts_finished(_friendly_tts_error(exc))
                 return
@@ -1549,47 +1494,45 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             path = generate()
             self._finish_sentence_tts(path, sentence_id)
         except Exception as exc:
-            if sentence_id in getattr(self, "_tts_play_when_ready", set()):
+            if sentence_id in self._tts_play_when_ready:
                 self._tts_play_when_ready.discard(sentence_id)
                 self._notify_tts_finished(_friendly_tts_error(exc))
         finally:
-            in_flight.discard(sentence_id)
+            self._tts_sentence_ids_in_flight.discard(sentence_id)
 
     def _on_sentence_tts_done(self, future: Any, sentence_id: int) -> None:
-        in_flight = getattr(self, "_tts_sentence_ids_in_flight", None)
-        if in_flight is not None:
-            in_flight.discard(sentence_id)
+        self._tts_sentence_ids_in_flight.discard(sentence_id)
         done = getattr(future, "done", None)
         if callable(done) and not done():
-            getattr(self, "_tts_play_when_ready", set()).discard(sentence_id)
+            self._tts_play_when_ready.discard(sentence_id)
             return
         try:
             path = Path(future.result())
             self._finish_sentence_tts(path, sentence_id)
         except Exception as exc:
-            if sentence_id in getattr(self, "_tts_play_when_ready", set()):
+            if sentence_id in self._tts_play_when_ready:
                 self._tts_play_when_ready.discard(sentence_id)
-                self._notify_tts_finished(_friendly_tts_error(exc))
+                active = self.active_task
+                if not getattr(self, "_closed", False) and active is not None and active.sentence_id == sentence_id:
+                    self._notify_tts_finished(_friendly_tts_error(exc))
 
     def _finish_sentence_tts(self, path: Path, sentence_id: int) -> None:
-        ready_paths = getattr(self, "_tts_ready_paths", None)
-        if ready_paths is None:
-            ready_paths = {}
-            self._tts_ready_paths = ready_paths
-        ready_paths[sentence_id] = Path(path)
-        play_when_ready = getattr(self, "_tts_play_when_ready", set())
-        if sentence_id not in play_when_ready:
+        self._tts_ready_paths[sentence_id] = Path(path)
+        if getattr(self, "_closed", False):
+            self._tts_play_when_ready.discard(sentence_id)
+            return
+        if sentence_id not in self._tts_play_when_ready:
             return
         active_task = self.active_task
         if active_task is None or active_task.sentence_id != sentence_id:
-            play_when_ready.discard(sentence_id)
+            self._tts_play_when_ready.discard(sentence_id)
             return
         if (
             _task_has_recall(active_task)
-            and getattr(self, "_revealed_sentence_id", None) != sentence_id
+            and self._revealed_sentence_id != sentence_id
         ):
             return
-        play_when_ready.discard(sentence_id)
+        self._tts_play_when_ready.discard(sentence_id)
         self._play_tts_path(Path(path))
         self._notify_tts_finished("")
 
@@ -1606,13 +1549,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         av_player.play_file(str(resolved))
 
     def _notify_tts_finished(self, error: str) -> None:
-        try:
-            self.web.eval(
-                "window.contextualTtsFinished(%s);"
-                % json.dumps(str(error or ""), ensure_ascii=False)
-            )
-        except Exception:
-            pass
+        self._call_web("contextualTtsFinished", str(error or ""))
 
     def _show_warning(self, message: str) -> None:
         try:
@@ -1735,9 +1672,15 @@ def _friendly_translation_error(exc: Exception) -> str:
     message = str(exc or "").strip()
     if "bundled deep-translator" in message:
         return message
-    if "timed out" in message.casefold() or "timeout" in type(exc).__name__.casefold():
-        return "Automatic translation timed out. Check your internet connection, then retry."
-    return "Translation unavailable. Check your internet connection."
+    lowered = message.casefold()
+    error_type = type(exc).__name__.casefold()
+    if "timed out" in lowered or "timeout" in error_type:
+        return "The translation service timed out. Retry in a moment."
+    if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        return "The translation service is temporarily rate-limiting requests. Retry shortly."
+    if "connection" in lowered or "network" in lowered or "connection" in error_type:
+        return "Could not reach the translation service. Check the connection and retry."
+    return "The translation service could not translate this text. Retry in a moment."
 
 
 def _is_safe_external_url(url: str) -> bool:
@@ -1861,8 +1804,13 @@ def _remember_recent_sentence_id(
     histories[key] = ids
     try:
         _write_recent_sentence_histories(history_path, histories)
-    except Exception:
-        pass
+    except Exception as exc:
+        append_debug_log(
+            "recent_sentence_history_write_error",
+            path=str(history_path),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
     return set(ids)
 
 
@@ -1879,24 +1827,12 @@ def _recent_sentence_key(db_path: Path, language: str) -> str:
 
 
 def _read_recent_sentence_histories(path: Path) -> Dict[str, List[int]]:
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    histories = raw.get("histories")
-    if not isinstance(histories, dict):
-        return {}
+    histories = read_json_state(path, "histories")["histories"]
     return {str(key): _clean_sentence_id_list(value) for key, value in histories.items()}
 
 
 def _write_recent_sentence_histories(path: Path, histories: Dict[str, List[int]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": 1, "histories": histories}
-    tmp_path = path.with_name("%s.tmp" % path.name)
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)
+    write_json_state(path, {"version": 1, "histories": histories})
 
 
 def _clean_sentence_id_list(value: Any) -> List[int]:

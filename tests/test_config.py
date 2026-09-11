@@ -7,6 +7,7 @@ from pathlib import Path
 
 from contextual_review import config as config_module
 from contextual_review.config import (
+    ConfigLoadError,
     DEFAULT_CUSTOM_SEARCH_QUERY,
     DEFAULT_DATABASE_PATH,
     USER_ROOT_ENV,
@@ -35,6 +36,26 @@ class FakeMw:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_load_config_does_not_silently_replace_a_read_failure_with_defaults(self) -> None:
+        class BrokenAddonManager:
+            def getConfig(self, _addon_name: str):
+                raise OSError("settings file is unreadable")
+
+        mw = type("FakeMw", (), {"addonManager": BrokenAddonManager()})()
+
+        with self.assertRaisesRegex(ConfigLoadError, "settings file is unreadable"):
+            load_config(mw, "addon")
+
+    def test_load_config_rejects_a_non_object_payload(self) -> None:
+        class InvalidAddonManager:
+            def getConfig(self, _addon_name: str):
+                return ["not", "an", "object"]
+
+        mw = type("FakeMw", (), {"addonManager": InvalidAddonManager()})()
+
+        with self.assertRaisesRegex(ConfigLoadError, "expected a JSON object"):
+            load_config(mw, "addon")
+
     def test_default_custom_search_query_excludes_reverse_cards(self) -> None:
         config = normalize_config({})
 

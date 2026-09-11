@@ -31,7 +31,9 @@ Use this before publishing a build to AnkiWeb.
 - Confirm an audio field can be played manually and that auto-play triggers at most one audio item when the solution opens.
 - With Learn New Cards disabled, mine a word and confirm the success banner, `mined-word` tag, native undo label, and one-card contextual introduction after grading the current sentence. Repeat with automatic New-limit increase enabled and confirm Anki still shows `Undo Add Contextual Note`, then undo and verify the note disappears. Confirm the introduction cannot be marked Good/Again, says `Start Learning`, and places only that exact card at Anki's first learning step through Again.
 - Mine another word with Learn New Cards disabled, close the review window before grading, reopen Contextual Review, and confirm recognition is recovered first. After starting it, confirm the masked recall sibling is also recovered, is separated by two unrelated sentences when available, and is still shown at session end when no other work exists.
-- Confirm the Tools menu contains only Start Review, Favorite Sentences, Settings, Quick Guide, and Diagnostics.
+- Confirm the Tools menu contains Start Review, Favorite Sentences, Last 100 Sentences, Settings, Quick Guide, Diagnostics, Version / About, and Report a bug.
+- On the deck list and deck overview, confirm Start Contextual Review opens the review window and Version shows 1.0.0.
+- Open Report a bug and confirm the GitHub form contains the installed add-on, Anki, and OS versions. Do not submit a test issue.
 - Confirm Basic Setup contains auto-configuration and the Sentence Library without requiring a separate setup wizard.
 - Confirm custom sentence import, word-form import, and full database deletion remain available in Advanced / Nerd Settings.
 - Open `Tools > Contextual Review > Quick Guide` and confirm it explains deck safety, sentence sources, optional word forms, and how to review by clicking forgotten target words.

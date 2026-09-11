@@ -1,5 +1,7 @@
 # Contextual Spaced Repetition
 
+**Version 1.0.0** · [Download](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/releases/latest) · [Report a bug](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/issues/new?template=bug_report.yml)
+
 Contextual Spaced Repetition is an Anki add-on that reviews due vocabulary in
 sentences instead of one card at a time. It finds due cards, chooses an offline
 sentence from a local SQLite corpus, lets you click the target words you forgot,
@@ -7,6 +9,23 @@ and grades the linked Anki cards through Anki's scheduler.
 
 The add-on includes a tiny smoke-test corpus so the package can be tested, but
 real use needs a sentence corpus for the language you are learning.
+
+## Start and get help
+
+Click **Start Contextual Review** on Anki's deck list or the deck overview
+(the screen with Study Now). The same action is under
+`Tools > Contextual Review > Start Review`.
+
+The **Version 1.0.0** button opens version information, a copy button, and the
+latest download page. **Report a bug** opens a short GitHub form with the add-on,
+Anki, and operating-system versions already filled in. Describe what went wrong;
+screenshots and error messages are optional. Review the form and submit it using
+a GitHub account. Nothing is posted automatically.
+
+Reports appear in this repository's [Issues](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/issues).
+Only version information is included automatically, never cards, deck contents,
+configuration, or API keys. Reports are public, so remove private information
+from any text or screenshots you attach.
 
 ## Install
 
@@ -61,8 +80,8 @@ To build a package yourself, run `python scripts/package_addon.py`, then install
 After testing and pushing changes to `main`, create and push a version tag:
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The GitHub release workflow runs the tests and smoke review, builds the
@@ -311,10 +330,22 @@ not require spaCy. If spaCy is installed and `--spacy-model` is supplied, the
 builder uses its lemmas during preprocessing; otherwise it uses the bundled
 lightweight normalizer.
 
-Sentence selection uses a greedy ordering: it anchors the query on the most
-urgent due word (intraday learning, then overdue review, then normal review),
-then chooses the returned sentence covering the most currently due cards.
-BM25 and shorter sentence length break remaining ties.
+Sentence selection anchors the query on an urgent due word (intraday learning,
+then overdue review, then normal review). It prefers sentences covering more
+currently due cards before considering the total number of matched cards,
+including optional early reviews. Nearer future reviews contribute more urgency
+than distant ones, and a multi-word card contributes urgency only once.
+Stored translations, BM25, and sentence length break the remaining ties.
+
+Sentence length and already-shown examples are filtered before the search result
+limit, so unusable top hits do not hide valid examples deeper in the corpus.
+This applies to both spaced-word and Japanese/Chinese/Korean search paths.
+Currently due companion words are searched before optional future companions
+can fill the candidate pool. Index matches are verified against the displayed
+targets before ranking or grading, so stale index entries cannot credit a word
+that is absent from the exercise.
+These changes preserve independent Anki scheduling and the existing
+show-solution, mark-forgotten, Grade & Next interaction.
 
 ## Tests
 
