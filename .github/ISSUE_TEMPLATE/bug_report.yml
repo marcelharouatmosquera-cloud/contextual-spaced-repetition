@@ -1,6 +1,5 @@
 name: Report a bug
 description: Tell us what went wrong with Contextual Review.
-title: ""
 body:
   - type: markdown
     attributes:
