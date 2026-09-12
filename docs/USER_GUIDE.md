@@ -25,11 +25,11 @@ Repeat the language and field checks for each deck with a different layout or la
 
 For recognition, try to understand the highlighted words in context. For recall, produce the missing target-language forms before revealing them. Click **Show Solution** or press Space/Enter.
 
-![Recall question](images/recall-question.png)
+![Recall question](images/recall-question.jpg)
 
 After revealing, click each forgotten target word or its **Mark forgotten** button. Forgotten targets receive **Again**; the others receive **Good**. You can toggle a mistaken selection before submitting. Check the Again/Good count, then click **Grade & Next** or press Space/Enter. Anki determines each card's next interval.
 
-![Answer with one forgotten word](images/recall-answer.png)
+![Answer with one forgotten word](images/recall-answer.jpg)
 
 These screenshots use example cards and illustrative progress: 8 done, 3 learning, 20 total. Green shows completed work, orange learning, and gray remaining work. Learning cards can require further repetitions; the bar is not a measure of language proficiency.
 

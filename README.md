@@ -16,7 +16,7 @@ in a local library, turns your vocabulary cards into recognition or recall
 exercises, and sends your answers to Anki. **Anki keeps scheduling each card
 independently**, using your learning steps and scheduler, including FSRS.
 
-![Recall exercise with two missing words and a visible session progress bar.](docs/images/recall-question.png)
+![Recall exercise with two missing words and a visible session progress bar.](docs/images/recall-question.jpg)
 
 *Example data rendered with the add-on's actual review interface. Produce the
 missing words before revealing. The bar shows 8 done, 3 learning, and 20 total;
@@ -102,7 +102,7 @@ sentence imports, word forms, and troubleshooting.
 | **Mark misses** | Click only targets you **did not remember**, or use **Mark forgotten**. Leave remembered targets unmarked. |
 | **Continue** | Press **Grade & Next**. Marked targets receive **Again**; unmarked targets receive **Good**. |
 
-![Revealed answer with one forgotten target, one remembered target, and visible progress.](docs/images/recall-answer.png)
+![Revealed answer with one forgotten target, one remembered target, and visible progress.](docs/images/recall-answer.jpg)
 
 *Example: Kaffee is marked forgotten and will receive Again; trinken is left
 unmarked and will receive Good. The shown intervals are illustrative; your
