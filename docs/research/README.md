@@ -20,6 +20,8 @@ AllAI combines several due vocabulary items in a sentence and schedules the word
 
 The extra features are practical adaptations, not interventions validated by this paper.
 
+In particular, section 4.1 describes interpreting a visible sentence, revealing its translation, and marking forgotten words. This add-on also offers meaning-to-target recall by masking target words with meaning hints for reverse Anki cards. That specific mode was not evaluated in the study. Section 2.2 does discuss earlier cloze-question research; we do not claim the paper never mentions cloze exercises.
+
 ## What the evidence supports
 
 The ten-day study used a convenience sample of 26 Danish learners. Sentence-based conditions showed roughly fourfold vocabulary-learning efficiency relative to the single-word baseline, which also included an example sentence. After adjustment for multiple comparisons, the retrieval-versus-baseline efficiency difference remained significant. Some other reported differences did not survive that correction.

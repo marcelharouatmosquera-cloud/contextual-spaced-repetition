@@ -468,7 +468,7 @@ def _open_settings_editor_dialog(
     library_count = QLabel()
     library_count.setWordWrap(True)
     library_layout.addWidget(library_count)
-    recommendation = QLabel("Recommended: 100,000 to 200,000 sentences.")
+    recommendation = QLabel("Recommended: 150,000 to 200,000 sentences. Coverage varies by deck and language.")
     recommendation.setWordWrap(True)
     library_layout.addWidget(recommendation)
 

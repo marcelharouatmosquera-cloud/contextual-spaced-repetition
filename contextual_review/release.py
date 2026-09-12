@@ -5,7 +5,7 @@ from __future__ import annotations
 import platform
 from urllib.parse import urlencode
 
-VERSION = "1.0.1"
+VERSION = "1.0.0"
 REPOSITORY_URL = "https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition"
 
 

@@ -37,9 +37,11 @@ Use the previous-sentence control (Ctrl+Z) to undo the previous contextual revie
 
 ## Sentences, audio, and useful extras
 
+Hover over a non-target word to see its automatic translation. Move into the popup, choose **Add Note**, check or edit **Word** and **Meaning**, then choose **Create Note** or **Cancel**. An exact match can be reused instead of duplicated.
+
 The star saves a favorite sentence. The history button opens your last 100 sentences. Favorites can be exported as Anki notes. Word lookup and the add-note flow let you turn useful unfamiliar vocabulary into notes; existing matching notes may be reused. Review proposed fields before adding.
 
-Sentence audio becomes available after revealing the solution. Existing audio fields depend on your deck configuration. Sentence selection works locally; library downloads need internet. Automatic translation sends requested text to Google, while generated sentence and mined-word audio use Microsoft's online Edge TTS. Cached translations and audio can be reused offline.
+For recall, sentence audio becomes available after revealing the solution; recognition can play it before reveal. Existing audio fields depend on your deck configuration. Sentence selection works locally; library downloads need internet. Automatic translation sends requested text to Google, while generated sentence and mined-word audio use Microsoft's online Edge TTS. Cached translations and audio can be reused offline.
 
 Advanced settings contain custom sentence and word-form imports, template mapping, and technical controls. Most users can begin with Basic Setup. A larger relevant library improves the chance of varied sentences; repeated examples can occur when few sentences match your due words.
 

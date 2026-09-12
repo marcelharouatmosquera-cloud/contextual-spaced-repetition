@@ -41,7 +41,7 @@ class OnboardingTextTests(unittest.TestCase):
         self.assertIn("Read Every Sentence Aloud Automatically", source)
         self.assertIn("Increase today's New limit for mined cards", source)
         self.assertIn("number of cards Anki actually generated", source)
-        self.assertIn("Recommended: 100,000 to 200,000 sentences.", source)
+        self.assertIn("Recommended: 150,000 to 200,000 sentences. Coverage varies by deck and language.", source)
         self.assertIn("Download size varies by language", source)
         self.assertNotIn(chr(0x2014), source)
 
