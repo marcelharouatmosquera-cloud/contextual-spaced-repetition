@@ -9,14 +9,14 @@ Use this before publishing a build to AnkiWeb.
 - Run `python -m compileall contextual_review scripts tests`.
 - Rebuild the smoke corpus with `python scripts/build_corpus.py --input data/seed_sentences.tsv --output data/contextual_sentences.db --language en --format tsv --word-forms data/seed_word_forms.tsv`.
 - Build the package with `python scripts/package_addon.py`.
-- On Windows, `build_addon.bat` may be used to run the tests, smoke review, and packaging steps together.
+- On Windows, `developer/build_addon.bat` may be used to run the tests, smoke review, and packaging steps together.
 - Confirm `dist/contextual_review_addon.ankiaddon` exists.
 
 ## Package Contents
 
 - `manifest.json`, `config.json`, and root `__init__.py` are present at the zip root.
 - `contextual_review/` contains only runtime Python modules.
-- `README.md`, `docs/USER_GUIDE.md`, and `docs/RELEASE_CHECKLIST.md` are included.
+- `README.md`, `docs/USER_GUIDE.md`, and the screenshots and research notes are included.
 - `data/contextual_sentences.db` and `data/language_profiles.json` are included.
 - `user_files/README.txt` is included, but user-created files under `user_files/` are not bundled.
 - Development folders such as `tests/`, `.git/`, and `IMPORTANT-Development instructions/` are not included.
@@ -32,7 +32,7 @@ Use this before publishing a build to AnkiWeb.
 - With Learn New Cards disabled, mine a word and confirm the success banner, `mined-word` tag, native undo label, and one-card contextual introduction after grading the current sentence. Repeat with automatic New-limit increase enabled and confirm Anki still shows `Undo Add Contextual Note`, then undo and verify the note disappears. Confirm the introduction cannot be marked Good/Again, says `Start Learning`, and places only that exact card at Anki's first learning step through Again.
 - Mine another word with Learn New Cards disabled, close the review window before grading, reopen Contextual Review, and confirm recognition is recovered first. After starting it, confirm the masked recall sibling is also recovered, is separated by two unrelated sentences when available, and is still shown at session end when no other work exists.
 - Confirm the Tools menu contains Start Review, Favorite Sentences, Last 100 Sentences, Settings, Quick Guide, Diagnostics, Version / About, and Report a bug.
-- On the deck list and deck overview, confirm Start Contextual Review opens the review window and Version shows 1.0.0.
+- On the deck list and deck overview, confirm Start Contextual Review opens the review window and Version shows the release version.
 - Open Report a bug and confirm the GitHub form contains the installed add-on, Anki, and OS versions. Do not submit a test issue.
 - Confirm Basic Setup contains auto-configuration and the Sentence Library without requiring a separate setup wizard.
 - Confirm custom sentence import, word-form import, and full database deletion remain available in Advanced / Nerd Settings.

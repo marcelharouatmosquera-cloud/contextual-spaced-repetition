@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 set "NO_OPEN="
 set "NO_PAUSE="

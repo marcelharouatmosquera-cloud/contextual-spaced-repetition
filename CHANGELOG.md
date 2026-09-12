@@ -1,5 +1,13 @@
 # Release notes
 
+## 1.0.1
+
+- Add a setup walkthrough directly to Basic Setup, with clear Auto-Configure and Save steps.
+- Replace documentation screenshots with isolated examples showing recall, grading, and progress.
+- Explain the research origins and limitations; include the original paper under its authors and year.
+- Correct outdated safety and library instructions and separate developer utilities from installation.
+- Keep deck overview launch controls outside the deck table.
+
 ## 1.0.0
 
 - Start Contextual Review directly from Anki's deck list and deck overview.

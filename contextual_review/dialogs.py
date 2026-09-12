@@ -69,19 +69,33 @@ INSTRUCTIONS_HTML = """
 <p>Review vocabulary from your existing Anki deck inside useful sentences.</p>
 
 <div class="safety">
-  <b>Safe to explore:</b> the add-on does not create or modify decks or notes.
+  <b>Safe to explore:</b>
   Opening it, changing settings, and importing sentences do not schedule cards.
-  Cards change only when you press <b>Grade &amp; Next</b>.
+  <b>Grade &amp; Next</b> submits review answers. A mined card's
+  <b>Start Learning</b> also changes its schedule. <b>Add Note</b> and favorites
+  export explicitly create or reuse notes.
 </div>
 
 <h2>First-time setup</h2>
 <ol>
-  <li><b>Choose the deck.</b> Open Settings and click the deck you want to configure.</li>
-  <li><b>Complete Basic Setup.</b> Choose both languages, then let Auto-Configure
-      map fields and recognition/recall templates before choosing what to study today.</li>
-  <li><b>Add sentences.</b> Use the Sentence Library in Basic Setup. Custom files
-      and word forms remain available in Advanced settings.</li>
-  <li><b>Run Diagnostics.</b> Resolve any required errors, then start reviewing.</li>
+  <li><b>Choose the deck.</b> Open Settings and click the deck you want to configure.
+      You can use <b>Open Settings</b> below, or Tools &gt; Contextual Review &gt; Settings.</li>
+  <li><b>Choose both languages.</b> In Basic Setup, set <b>Language you are learning</b>
+      and <b>Language for translations</b>. Auto-Configure does not guess these.</li>
+  <li><b>Preview Auto-Configure Fields.</b> Click this button and check the detected
+      target-word, translation, optional audio, and recognition/recall templates.
+      Recognition shows the target; recall hides it behind a translation hint.</li>
+  <li><b>Apply and verify.</b> Choose <b>Yes</b> if the preview is correct. It updates
+      the editor; check the Step 3 fields. If incorrect, choose No and select the
+      fields manually. Template lists are in Advanced settings.</li>
+  <li><b>Choose what to study.</b> Start with Review Due Cards and Include Learning/Red Cards.
+      Learn New Cards is optional and has a separate maximum.</li>
+  <li><b>Import sentences.</b> In Sentence Library, choose Library size and click
+      <b>Import More</b>. Wait for completion. The bundled sample is only for testing;
+      custom files and word forms are available in Advanced settings.</li>
+  <li><b>Save and start.</b> Click <b>Save</b>, run Tools &gt; Contextual Review &gt;
+      Diagnostics, resolve any errors, then click <b>Start Contextual Review</b>
+      on the deck screen. Repeat setup separately for each language deck.</li>
 </ol>
 
 <h2>How a review works</h2>
@@ -95,6 +109,19 @@ INSTRUCTIONS_HTML = """
   <li>Choose <b>Grade &amp; Next</b>: clicked words receive <b>Again</b>; unclicked words receive <b>Good</b>.</li>
 </ol>
 <p class="note"><b>Made a mistake?</b> Press <b>Ctrl+Z</b> to undo the last submitted batch.</p>
+
+<h2>Understand your progress</h2>
+<p><b>Green:</b> finished for today. <b>Orange:</b> learning or relearning later today.
+<b>Gray:</b> remaining work from the initial session goal. Nothing due right now
+can mean a learning step is waiting; use Refresh later.</p>
+<p>The star saves a favorite; the clock opens the last 100 sentences.
+Report a bug and Version are on the deck screen and in the Tools menu.</p>
+
+<h2>Research inspiration</h2>
+<p>This independent add-on adapts sentence retrieval from Paddags, Hershcovich,
+and Savage's 2024 AllAI study. It uses Anki scheduling and adds masked recall,
+audio, and mining. The study did not evaluate this add-on.
+<a href="https://aclanthology.org/2024.bea-1.29/">Read the original research</a>.</p>
 
 <h2>Choosing sentence data</h2>
 <ul>
@@ -261,6 +288,10 @@ def _open_settings_editor_dialog(
     tabs.addTab(basic_tab, "Basic Setup")
     tabs.addTab(advanced_tab, "Advanced / Nerd Settings")
     layout.addWidget(tabs)
+
+    setup_help = QPushButton("Setup walkthrough / Quick Guide")
+    setup_help.clicked.connect(lambda: show_instructions_dialog(mw, addon_name, allow_settings=False))
+    basic_layout.addWidget(setup_help)
 
     copy_row = QHBoxLayout()
     copy_source = QComboBox()
@@ -464,7 +495,7 @@ def _open_settings_editor_dialog(
     library_layout.addLayout(library_delete_row)
 
     library_note = QLabel(
-        "The compressed download is only a few MB. The searchable library can use more space after import."
+        "Download size varies by language. The searchable library uses more space after import."
     )
     library_note.setWordWrap(True)
     library_layout.addWidget(library_note)
@@ -1080,7 +1111,7 @@ def show_diagnostics_dialog(mw: Any, addon_name: str) -> None:  # pragma: no cov
         showInfo(message)
 
 
-def show_instructions_dialog(mw: Any, addon_name: str) -> None:  # pragma: no cover - Anki UI
+def show_instructions_dialog(mw: Any, addon_name: str, allow_settings: bool = True) -> None:  # pragma: no cover - Anki UI
     from aqt.qt import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout
 
     dialog = QDialog(mw)
@@ -1094,12 +1125,13 @@ def show_instructions_dialog(mw: Any, addon_name: str) -> None:  # pragma: no co
     layout.addWidget(guide)
 
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-    settings = buttons.addButton("Open Settings", QDialogButtonBox.ButtonRole.ActionRole)
-    settings.clicked.connect(dialog.accept)
+    if allow_settings:
+        settings = buttons.addButton("Open Settings", QDialogButtonBox.ButtonRole.ActionRole)
+        settings.clicked.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
 
-    if dialog.exec() == QDialog.DialogCode.Accepted:
+    if dialog.exec() == QDialog.DialogCode.Accepted and allow_settings:
         open_settings_dialog(mw, addon_name)
 
 

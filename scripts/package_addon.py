@@ -21,7 +21,9 @@ INCLUDE_PATHS = (
     "CHANGELOG.md",
     "contextual_review",
     "data",
-    "docs",
+    "docs/USER_GUIDE.md",
+    "docs/images",
+    "docs/research",
     "user_files/README.txt",
     "scripts/build_corpus.py",
 )

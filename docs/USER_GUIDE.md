@@ -1,291 +1,67 @@
-# Contextual Review User Guide
+# Contextual Review user guide
 
-This guide is for using the add-on inside Anki.
+## Install and start
 
-## What You Need
+Install the `.ankiaddon` from [GitHub Releases](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/releases/latest) through **Tools → Add-ons → Install from file**, then restart Anki. Use Anki Desktop 23.10 or later. Mobile Anki apps cannot run this add-on.
 
-You need two things:
+Select a vocabulary deck and open **Tools → Contextual Review → Settings**. The deck screen's **Start Contextual Review** button starts practice after setup. **Version** shows your installed version and download link.
 
-1. Anki vocabulary cards with a field that contains the word you are learning.
-2. A sentence corpus for the same language.
+## Simple setup
 
-Word-form mappings are optional. They are useful when the card says `go` but
-the sentence says `went`, or when a language has many inflected forms.
+1. In Settings, select the vocabulary deck to configure.
+2. Under **Basic Setup**, choose **Language you are learning** and **Language for translations**. Choose these yourself before running Auto-Configure.
+3. Click **Preview Auto-Configure Fields**. Check the proposed word, translation, optional audio, and recognition/recall templates. Recognition shows the target-language word; recall asks you to produce it from a meaning hint.
+4. Click **Yes** to apply the proposal to the settings editor. This does not save yet. Verify the fields shown in Step 3. If detection is wrong, select the correct fields manually; template mappings are under **Advanced / Nerd Settings**.
+5. Leave new-card learning off initially if you want to practise due and learning cards only.
+6. In **Sentence Library**, click **Import More** and import sentences for your learning language. The bundled sample is only for testing. Download size varies by language; the searchable library takes additional space.
+7. Click **Save**. Run **Tools → Contextual Review → Diagnostics**, resolve missing fields or library warnings, then start a review.
 
-## Setup
+Repeat the language and field checks for each deck with a different layout or language. The **Setup walkthrough / Quick Guide** button in Basic Setup explains these steps inside Anki.
 
-Open:
+![Basic Setup](images/setup.png)
+![Auto-Configure proposal](images/auto-configure.png)
 
-```text
-Tools > Contextual Review > Settings
-```
+## Review a sentence
 
-Choose a deck, preview Auto-Configure, verify the detected fields, and use the
-Sentence Library to add sentences. Then run Diagnostics and start reviewing.
-Custom sentence and word-form imports are in Advanced / Nerd Settings.
+For recognition, try to understand the highlighted words in context. For recall, produce the missing target-language forms before revealing them. Click **Show Solution** or press Space/Enter.
 
-The add-on does not create a new deck and does not edit your notes. Opening the
-review window, changing settings, and importing sentences do not schedule
-cards. Existing cards are scheduled only after you press `Grade & Next`.
+![Recall question](images/recall-question.png)
 
-## Settings
+After revealing, click each forgotten target word or its **Mark forgotten** button. Forgotten targets receive **Again**; the others receive **Good**. You can toggle a mistaken selection before submitting. Check the Again/Good count, then click **Grade & Next** or press Space/Enter. Anki determines each card's next interval.
 
-Set `Target note field` to the Anki note field containing the target-language
-word. Common examples are `Front`, `Word`, `Expression`, `Vocabulary`, or the
-name of the language.
+![Answer with one forgotten word](images/recall-answer.png)
 
-Under `Fields shown after Show Solution`, add any note fields you want revealed
-after answering. Each row can be shown as text, image, audio, or detected
-automatically. You can add, remove, relabel, and reorder rows. Audio rows can
-optionally play when the solution is revealed.
+These screenshots use example cards and illustrative progress: 8 done, 3 learning, 20 total. Green shows completed work, orange learning, and gray remaining work. Learning cards can require further repetitions; the bar is not a measure of language proficiency.
 
-Field controls are populated from the deck you chose. If you change cards or
-note types in Anki, click `Refresh fields from selected deck`.
+Use the previous-sentence control (Ctrl+Z) to undo the previous contextual review when available. A new-card introduction uses **Start Learning**, which starts that card at Anki's first learning step; it is not graded as remembered just because you saw the answer.
 
-Set `Target language` to a language code such as `en`, `de`, `es`, `fr`, `ru`,
-or `ja`.
+## Sentences, audio, and useful extras
 
-If you use Contextual Review with multiple language decks, open Settings,
-choose the deck you want, and save that deck's language, fields, searches, and
-database path. Choose the next language deck and repeat. Use `Copy settings
-from...` if the new deck should start from an existing deck's setup. When you
-later start reviews or imports, the add-on loads the profile for the active
-deck automatically.
+The star saves a favorite sentence. The history button opens your last 100 sentences. Favorites can be exported as Anki notes. Word lookup and the add-note flow let you turn useful unfamiliar vocabulary into notes; existing matching notes may be reused. Review proposed fields before adding.
 
-Basic Setup uses friendly choices for due cards, new cards, and learning cards.
-`Preview Auto-Configure` detects field roles and card direction from note
-fields and card templates. Target-to-native templates become recognition cards;
-native-to-target templates become contextual recall cards.
-Open Advanced / Nerd Settings only when you need Anki search syntax or the
-separate recognition/recall card-template filters.
+Sentence audio becomes available after revealing the solution. Existing audio fields depend on your deck configuration. Sentence selection works locally; library downloads need internet. Automatic translation sends requested text to Google, while generated sentence and mined-word audio use Microsoft's online Edge TTS. Cached translations and audio can be reused offline.
 
-The default filter is:
+Advanced settings contain custom sentence and word-form imports, template mapping, and technical controls. Most users can begin with Basic Setup. A larger relevant library improves the chance of varied sentences; repeated examples can occur when few sentences match your due words.
 
-```text
-is:due -card:2 -card:3 -card:Reverse
-```
+## What changes in Anki
 
-The Sentence Library section shows how many sentences are already stored for
-the selected language. A library of 100,000 to 200,000 sentences is recommended.
-Choose a target size to import more, or delete a chosen amount or all sentences
-for that language.
+Review answers and Start Learning change card scheduling. The add-on uses native Anki scheduling, including FSRS. Opening Settings or revealing a solution alone does not grade a card. Adding vocabulary and exporting favorites can create or reuse notes. Keep Anki's normal backups enabled.
 
-Deck profiles are stored in `deck_configs` in the add-on config, but normal
-setup should not require editing JSON by hand. A profile for `Spanish` matches
-`Spanish` and `Spanish::Subdeck` by default.
+## If something looks wrong
 
-## Sentence Files
+| Problem | What to check |
+| --- | --- |
+| No review work | Selected deck, due/learning cards, and whether new-card learning is enabled |
+| No suitable sentences | Import a library for the selected language and run Diagnostics |
+| Wrong word or meaning | Recheck language choices and Auto-Configure fields, then Save |
+| Recall appears as recognition | Verify card-template mappings in Advanced settings |
+| Translation or audio unavailable | Internet connection, language choices, and configured audio field |
+| Changes do not appear | Save settings; restart Anki after installing an update |
 
-The easiest source is:
+For a bug, use **Report a bug** on the deck screen or Tools menu. The public GitHub form includes the add-on, Anki, and OS versions automatically when opened from the add-on. Add a short title, what you did, what happened, and what you expected. Remove personal details from screenshots. A GitHub account is required.
 
-```text
-Tools > Contextual Review > Settings > Sentence Library > Import More
-```
+## Practice advice and research
 
-The dialog suggests a language code from your settings. Accept it or enter a
-Tatoeba code.
+Try saying the complete expression aloud after checking it. Notice whether you can use it in a casual reply, recover after hesitation, and understand a short example before reading. Card accuracy alone does not establish those skills.
 
-Tatoeba imports are capped by default. The add-on streams the compressed export,
-imports up to `Max imported sentences`, and does not keep the compressed archive
-unless `Keep downloaded archives` is enabled.
-
-The compressed archive and the imported review database are different sizes. A
-Tatoeba `.bz2` file may be only a few MB, while a full uncapped SQLite database
-can grow to hundreds of MB.
-
-To import your own material, use:
-
-```text
-Tools > Contextual Review > Settings > Advanced / Nerd Settings > Import Custom Sentence File
-```
-
-Supported files:
-
-- `.txt`: normal text. The importer splits it into sentences.
-- `.srt`: subtitle files.
-- `.tsv` or `.csv`: sentence tables, optionally with IDs, language codes, or
-  translations.
-- `.bz2`: compressed Tatoeba-style TSV exports.
-
-A word list is not enough. The add-on needs full sentences.
-
-Accepted table shapes include:
-
-```text
-Sentence text.
-Sentence text.    Translation text.
-42    Sentence text.
-de    Satztext.
-1     deu    Satztext.    Translation text.
-```
-
-## Word-Form Files
-
-Use word-form files only when you need morphology support. They are two-column
-TSV, CSV, or text files. Text files may use tabs or commas between columns.
-
-The first column is the form that may appear in a sentence. The second column is
-the base word on your Anki card.
-
-```text
-went    go
-eating  eat
-Hunde   Hund
-```
-
-Import them with:
-
-```text
-Tools > Contextual Review > Settings > Advanced / Nerd Settings > Import Word Forms
-```
-
-Then set `Vocabulary matching` to `Lemma family` if you want those mappings to
-affect review matching.
-
-## Reviewing
-
-Open:
-
-```text
-Tools > Contextual Review > Start Review
-```
-
-For recognition cards, read the sentence normally; highlighted words are linked
-to due Anki cards. For recall cards, the matched target-language form is replaced
-by a `[ translation ]` blank and the sentence translation is shown below the
-sentence. Missing translations are obtained automatically and carry a small
-machine-translation warning. Produce the missing form mentally or aloud.
-
-Press `Space`, `Enter`, or `Show Solution` to reveal recall blanks. Click only
-the revealed or highlighted target words you did not remember. Do not click
-words you knew.
-
-Click `Show Solution` to reveal the stored sentence translation, the matched
-card definitions, and the `Good`/`Again` interval preview. If no stored
-sentence translation exists, Google translation runs automatically in the
-review window. You can also hover briefly over a non-target word for a quick
-translation.
-
-Sentence TTS is never played before `Show Solution` when the sentence contains
-a recall blank. With automatic read-aloud enabled, audio is prepared silently
-during the question and played as soon as the answer is revealed.
-
-Click `Grade & Next` to grade the sentence:
-
-- Clicked target words are graded as `Again`.
-- Unclicked target words are graded as `Good`.
-
-Click the star in the top-right corner to save the current sentence. Favorite
-Sentences in the Contextual Review tools menu lets you revisit saved sentences
-for the active language deck, remove entries you no longer need, or export all
-visible favorites to a dedicated Anki deck.
-
-Hover over a non-target word to see its automatic translation. Choose `Add Note`
-inside that popup to create a note with the active card's exact note type and
-deck. The configured target and translation fields are filled, the sentence is
-stored in an example/context field when available, and target-language audio is
-attached by default when the note type has an audio field. All templates on the
-note type are generated automatically and the resulting New cards are moved to
-the front with Anki's native reposition operation.
-
-In Advanced / Nerd Settings, enable `Increase today's New limit for mined
-cards` if mining should also make room in today's New-card allowance. The
-increase is automatic: one generated card adds one slot, while a note type that
-actually generates forward and reverse cards adds two slots. The adjustment is
-for today only.
-
-Mined notes receive the `mined-word` tag. When `Learn New Cards` is disabled,
-the new word is still queued once inside Contextual Review by its exact card ID.
-After the current sentence is graded, it gets a sentence containing only that
-new card; unrelated New cards remain disabled. Recognition and recall siblings
-are never mixed into the same sentence. This first appearance is an
-introduction: reveal the meaning and press `Start Learning`. The exact card is
-answered Again through Anki so it enters its first learning step; normal
-Again/Good grading begins on later appearances. The introduction is not counted
-as a forgotten word. If the window or Anki closes first, the next Contextual
-Review session recovers pending New recognition cards tagged `mined-word` and
-shows their introductions before ordinary due work. After recognition enters
-Learning, its New recall sibling receives its own masked introduction. The
-add-on puts two unrelated sentences between the sibling directions when it can,
-but shows the recall card at session end if no other work is available. A
-confirmation banner reports the word and generated-card count, and Ctrl+Z
-immediately removes the new note.
-
-You can also press `Space` or `Enter` to reveal the solution, then press it
-again to submit. Number keys `1` to `9` toggle the first nine target words.
-Press `Ctrl+Z` to undo the last contextual review and return to its sentence.
-Ctrl+Z remains available while the next sentence is being found, and undo also
-restores the progress bar immediately. Green means finished for today, orange
-means the card is waiting in an intraday learning/relearning step, and gray is
-the part of the initial session goal still remaining.
-
-Contextual Review schedules the linked cards as a batch, so a sentence can
-cover multiple due words without being limited to Anki's next queued card.
-The next sentence is selected greedily: anchor on the most urgent due word,
-search for anchor sentences containing another due word first, then prefer the
-candidate covering the most currently due cards. If there is no overlap, a
-normal one-word sentence is used. The Again and Good time labels are read from
-Anki's current scheduling states, so learning steps and FSRS intervals are not
-estimated by the add-on. Forward and reverse siblings from one note are kept
-two unrelated sentences apart when possible, but remain available immediately
-if there is nothing else to study.
-Sentences are avoided while the current Contextual Review window remains open,
-and recently shown sentences are also avoided when you close and reopen the
-window. They can still appear again if matching due cards remain and the corpus
-has limited alternatives.
-
-## Diagnostics
-
-Run:
-
-```text
-Tools > Contextual Review > Diagnostics
-```
-
-Diagnostics checks the selected note fields, sentence database, scheduler API,
-undo support, import support, word-form count, and whether the configured
-search finds due cards.
-
-After a contextual review, the add-on also writes a troubleshooting log to:
-
-```text
-user_files/contextual_review.log
-```
-
-The log records scheduler events, card IDs, answer ease, and before/after
-scheduling fields. It does not include card text or note contents.
-
-Fix diagnostics errors before using the add-on for real reviews.
-
-## Example: Senren Japanese Notes
-
-For the Senren fields `word`, `reading`, `definition`, `picture`, and
-`wordAudio`, a useful starting configuration is:
-
-- Target field: `word`
-- Target language: `ja`
-- Native language: `en`
-- Solution fields: `reading` as text, `definition` as text
-- Optional: `picture` as image and `wordAudio` as audio
-- Settings deck: your Japanese deck
-
-To exclude Senren audio-card and sentence-card modes while testing normal word
-cards, use this Anki search:
-
-```text
-is:due -audioCard:_* -sentenceCard:_*
-```
-
-Japanese and Chinese use script-aware substring matching because they do not
-normally separate every word with spaces.
-
-## Removing Imported Sentences
-
-Use:
-
-```text
-Tools > Contextual Review > Settings > Advanced / Nerd Settings > Delete Entire Sentence Database
-```
-
-This deletes only the add-on's imported sentence database. It does not delete,
-move, or edit your Anki decks, notes, or cards.
+This is an independent adaptation of Paddags, Hershcovich, and Savage's 2024 AllAI research. Read the [research notes and paper](research/README.md) for the source, differences, and study limitations.

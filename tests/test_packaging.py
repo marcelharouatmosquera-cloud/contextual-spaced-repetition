@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGER_PATH = ROOT / "scripts" / "package_addon.py"
-BUILD_BATCH_PATH = ROOT / "build_addon.bat"
+BUILD_BATCH_PATH = ROOT / "developer" / "build_addon.bat"
 
 
 def load_packager():

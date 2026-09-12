@@ -37,7 +37,7 @@ class ReleaseTests(unittest.TestCase):
                               lambda: calls.append("version"), lambda: calls.append("bug"))
         for hook, context, field in (
             (hooks.overview_will_render_content[0], Overview(), "table"),
-            (hooks.deck_browser_will_render_content[0], DeckBrowser(), "tree"),
+            (hooks.deck_browser_will_render_content[0], DeckBrowser(), "stats"),
         ):
             content = SimpleNamespace(**{field: "existing content"})
             hook(context, content)

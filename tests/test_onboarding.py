@@ -42,7 +42,7 @@ class OnboardingTextTests(unittest.TestCase):
         self.assertIn("Increase today's New limit for mined cards", source)
         self.assertIn("number of cards Anki actually generated", source)
         self.assertIn("Recommended: 100,000 to 200,000 sentences.", source)
-        self.assertIn("only a few MB", source)
+        self.assertIn("Download size varies by language", source)
         self.assertNotIn(chr(0x2014), source)
 
     def test_basic_field_mapping_keeps_advanced_solution_fields(self) -> None:
@@ -77,11 +77,15 @@ class OnboardingTextTests(unittest.TestCase):
 
     def test_instructions_explain_deck_safety_and_submission_boundary(self) -> None:
         for text in (
-            "does not create or modify decks or notes",
+            "Add Note",
             "Open Settings and click the deck you want to configure",
-            "Cards change only when you press <b>Grade &amp; Next</b>",
+            "Start Learning",
             "Press <b>Ctrl+Z</b> to undo",
             "Safe to explore",
+            "Preview Auto-Configure Fields",
+            "Language for translations",
+            "Import More",
+            "<b>Save</b>",
         ):
             self.assertIn(text, INSTRUCTIONS_HTML)
 

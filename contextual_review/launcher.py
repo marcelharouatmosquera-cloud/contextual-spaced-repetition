@@ -23,8 +23,8 @@ def register_launcher(on_start, on_version, on_bug) -> None:
             content.table += launcher_html()
 
     def deck_content(deck_browser, content) -> None:
-        if 'id="contextual-review-launcher"' not in content.tree:
-            content.tree += launcher_html()
+        if 'id="contextual-review-launcher"' not in content.stats:
+            content.stats += launcher_html()
 
     callbacks = {
         "contextual-review:start": on_start,

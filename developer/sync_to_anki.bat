@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 python scripts\install_dev_loader.py %*
 set "SYNC_EXIT=%ERRORLEVEL%"
 
