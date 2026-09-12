@@ -118,7 +118,7 @@ goal**. “Nothing due right now” may mean a learning step is still waiting.
 **Useful extras:** the star saves a favorite; the clock opens the last 100
 sentences. Hover over a non-target word for a translation. **Add Note** explicitly
 creates or reuses a vocabulary note; favorites can also be exported to a deck.
-See [mining and undo](docs/USER_GUIDE.md#save-sentences-and-new-words).
+See [mining and undo](docs/USER_GUIDE.md#sentences-audio-and-useful-extras).
 
 ## My practical suggestion
 
