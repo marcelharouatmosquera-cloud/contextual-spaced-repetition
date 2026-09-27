@@ -1,5 +1,23 @@
 # Release notes
 
+## 1.1.0
+
+- Match Russian words in all their inflected forms. Russian vocabulary was only
+  found in its dictionary form, so most sentences containing a due word were
+  missed and two due words rarely shared a sentence.
+- Search 100 due cards per sentence instead of 20, giving the most urgent word
+  more due companions to share a sentence with. Settings still at the old
+  default of 20 are raised once; other values are kept.
+- Keep accents in dictionary lookups, hover translations, and mined words, so
+  *действительность* and *Mädchen* are no longer sent as *деиствительность*
+  and *madchen*.
+- Fall back to the MyMemory translation service while Google is rate-limiting
+  requests.
+- Include relearning cards that become due during a session in today's goal.
+- Require Anki 25.07 or later, the first version with the scheduler call used
+  for grading.
+- Stop concurrent log writes from corrupting the troubleshooting log.
+
 ## 1.0.0
 
 - Add a setup walkthrough directly to Basic Setup, with clear Auto-Configure and Save steps.

@@ -128,8 +128,10 @@ def validate_manifest(path: Path) -> None:
     for key in ("package", "name", "min_point_version"):
         if key not in data:
             raise RuntimeError("manifest.json is missing %s" % key)
-    if int(data["min_point_version"]) < 231000:
-        raise RuntimeError("manifest.json must target Anki Qt6 builds")
+    if int(data["min_point_version"]) < 250700:
+        # Anki 25.07 added the Grade Now backend call used for grading and
+        # moved to Python 3.13, which the bundled HTTP libraries require.
+        raise RuntimeError("manifest.json must target Anki 25.07 or later")
 
 
 def sync_build_dir(files: Iterable[Tuple[Path, str]], build_dir: Path) -> None:

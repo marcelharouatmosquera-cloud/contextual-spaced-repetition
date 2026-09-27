@@ -2,7 +2,7 @@
 
 ## Install and start
 
-Install the `.ankiaddon` from [GitHub Releases](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/releases/latest) through **Tools → Add-ons → Install from file**, then restart Anki. Use Anki Desktop 23.10 or later. Mobile Anki apps cannot run this add-on.
+Install the `.ankiaddon` from [GitHub Releases](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/releases/latest) through **Tools → Add-ons → Install from file**, then restart Anki. Use Anki Desktop 25.07 or later. Mobile Anki apps cannot run this add-on.
 
 Select a vocabulary deck and open **Tools → Contextual Review → Settings**. The deck screen's **Start Contextual Review** button starts practice after setup. **Version** shows your installed version and download link.
 
@@ -41,7 +41,7 @@ Hover over a non-target word to see its automatic translation. Move into the pop
 
 The star saves a favorite sentence. The history button opens your last 100 sentences. Favorites can be exported as Anki notes. Word lookup and the add-note flow let you turn useful unfamiliar vocabulary into notes; existing matching notes may be reused. Review proposed fields before adding.
 
-For recall, sentence audio becomes available after revealing the solution; recognition can play it before reveal. Existing audio fields depend on your deck configuration. Sentence selection works locally; library downloads need internet. Automatic translation sends requested text to Google, while generated sentence and mined-word audio use Microsoft's online Edge TTS. Cached translations and audio can be reused offline.
+For recall, sentence audio becomes available after revealing the solution; recognition can play it before reveal. Existing audio fields depend on your deck configuration. Sentence selection works locally; library downloads need internet. Automatic translation sends requested text to Google (or to MyMemory while Google is rate-limiting requests), while generated sentence and mined-word audio use Microsoft's online Edge TTS. Cached translations and audio can be reused offline.
 
 Advanced settings contain custom sentence and word-form imports, template mapping, and technical controls. Most users can begin with Basic Setup. A larger relevant library improves the chance of varied sentences; repeated examples can occur when few sentences match your due words.
 

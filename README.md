@@ -119,7 +119,8 @@ and differences from the study.
 
 ## Install
 
-1. Use [Anki Desktop](https://apps.ankiweb.net/), version 23.10 or later.
+1. Use [Anki Desktop](https://apps.ankiweb.net/), version 25.07 or later. Earlier
+   versions lack the scheduler call used to grade contextual answers.
 2. Download **contextual_review_addon.ankiaddon** from the
    [latest release](https://github.com/marcelharouatmosquera-cloud/contextual-spaced-repetition/releases/latest).
    Choose this asset, rather than GitHub's source-code ZIP.
@@ -252,8 +253,8 @@ from another deck, then check the language and field names before saving.
 
 | Area | Controls and when they help |
 | --- | --- |
-| **Card Selection** | Set an Anki search query, recognition and recall template lists, the recognition front-field check, future-due window, and maximum cards per search. Use this to select a subset or fix reverse-card routing. Including future-due cards allows early practice. |
-| **Vocabulary Matching** | Choose **Lemma family** to match related word forms using available language rules and mappings, or **Exact word form** for stricter matching. Lemma matching is not a guarantee that every inflection is understood. |
+| **Card Selection** | Set an Anki search query, recognition and recall template lists, the recognition front-field check, future-due window, and maximum cards per search (default 100). Use this to select a subset or fix reverse-card routing. A larger search window gives the most urgent word more due companions to share a sentence with. Including future-due cards allows early practice. |
+| **Vocabulary Matching** | Choose **Lemma family** to match related word forms using available language rules and mappings, or **Exact word form** for stricter matching. English, German, and Russian have built-in word-ending rules; Russian uses the Snowball stemmer, so *поездка* also finds *поездку* and *поездкой*. Other languages rely on imported word-form mappings. Lemma matching is not a guarantee that every inflection is understood. |
 | **Sentence Matching** | Set the shortest and longest sentence, choose whether to ignore common words, use every word, or extract only the first word, and supply extra ignored words. Shorter sentences can make practice more manageable. |
 | **Additional fields after Show Solution** | Add and reorder extra note fields, select text/image/audio display, customize labels, and choose audio behavior. Useful for pronunciation, pictures, or usage notes already in your deck. |
 | **Storage and Advanced Options** | Choose the sentence database and dictionary URL, import filtering, whether to keep downloaded archives, mined-note audio, today's New-limit increase for mined cards, and sentence text size. |
@@ -289,7 +290,9 @@ These are practice suggestions, not a protocol validated in the AllAI study.
 
 Sentence selection uses your local library and needs no LLM API key. Library
 downloads need internet. Automatic translation sends the requested text to
-Google; sentence audio and mined-word audio use Microsoft's online Edge TTS.
+Google; while Google is rate-limiting requests, short texts go to the MyMemory
+translation service instead. Sentence audio and mined-word audio use Microsoft's
+online Edge TTS.
 Stored translations and cached audio remain useful offline.
 
 Click **Report a bug** on the deck screen or in the Tools menu. The GitHub form

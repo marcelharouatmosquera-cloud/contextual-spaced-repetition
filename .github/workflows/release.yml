@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"  # Anki 25.07+ bundles Python 3.13
 
       - name: Run tests
         run: python -m unittest discover -s tests
@@ -37,7 +37,22 @@ jobs:
       - name: Build add-on package
         run: python scripts/package_addon.py --no-build-dir
 
+      - name: Extract release notes
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          changelog = open("CHANGELOG.md", encoding="utf-8").read()
+          section = re.search(
+              r"^## %s\n(.*?)(?=^## |\Z)" % re.escape(version), changelog, re.M | re.S
+          )
+          assert section, "CHANGELOG.md has no section for " + version
+          with open("release-notes.md", "w", encoding="utf-8") as notes:
+              notes.write(section.group(1).strip() + "\n")
+          PY
+
       - name: Create GitHub release
-        run: gh release create "$GITHUB_REF_NAME" dist/contextual_review_addon.ankiaddon --notes-file CHANGELOG.md --title "Contextual Spaced Repetition $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/contextual_review_addon.ankiaddon --notes-file release-notes.md --title "Contextual Spaced Repetition $GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}
