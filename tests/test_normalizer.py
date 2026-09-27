@@ -22,7 +22,8 @@ class NormalizerTests(unittest.TestCase):
         self.assertEqual(normalize_word("improved", "en"), "improve")
 
     def test_normalize_non_english_letters(self) -> None:
-        self.assertEqual(normalize_word("ma\u00f1ana", "es"), "manana")
+        self.assertEqual(normalize_word("ma\u00f1ana", "es"), "manan")
+        self.assertEqual(normalize_form("ma\u00f1ana"), "manana")
 
     def test_normalize_form_keeps_inflected_surface(self) -> None:
         self.assertEqual(normalize_form("Students,"), "students")

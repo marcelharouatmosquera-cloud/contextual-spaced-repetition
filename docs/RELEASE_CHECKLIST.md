@@ -15,7 +15,7 @@ Use this before publishing a build to AnkiWeb.
 ## Package Contents
 
 - `manifest.json`, `config.json`, and root `__init__.py` are present at the zip root.
-- `contextual_review/` contains only runtime Python modules.
+- `contextual_review/` contains runtime modules and vendored libraries, including Snowball source, version metadata, and its BSD license.
 - `README.md`, `docs/USER_GUIDE.md`, and the screenshots and research notes are included.
 - `data/contextual_sentences.db` and `data/language_profiles.json` are included.
 - `user_files/README.txt` is included, but user-created files under `user_files/` are not bundled.
@@ -59,6 +59,7 @@ Use this before publishing a build to AnkiWeb.
 - Leave one target word unmarked, press Next, and confirm the matched card receives `Good`.
 - Confirm the displayed Again/Good times match Anki's native answer-button labels for a New, Learning, and Review card.
 - On a forward/reverse note with sibling burying disabled, confirm the reverse card is separated by two unrelated sentences when available and is still shown when it is the only due work.
+- In a pre-existing Russian library, confirm поездка highlights поездке; in a French library, confirm cheval highlights chevaux. Check Exact word form does not broaden either match.
 - With two due words sharing a corpus sentence, confirm the greedy selector finds the two-word sentence even when many shorter one-word candidates exist.
 - Use Anki undo immediately after a sentence and confirm the batch answer is reversible.
 - Press Ctrl+Z while the next sentence is still being found and confirm the previous batch and progress bar are restored.
@@ -70,4 +71,4 @@ Use this before publishing a build to AnkiWeb.
 
 - Full Anki runtime behavior still needs manual QA because the unit tests use fakes.
 - The bundled corpus is only a smoke-test database; users should import a real corpus.
-- Lemma-family matching depends on `word_forms` coverage. Exact-form matching remains available for stricter decks.
+- Lemma-family matching uses approximate language rules plus imported word forms. Verify a regular inflection and an imported irregular form; Exact word form remains available for stricter decks.

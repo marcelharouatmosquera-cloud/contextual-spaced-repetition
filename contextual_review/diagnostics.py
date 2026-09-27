@@ -17,8 +17,8 @@ from .anki_bridge import (
 from .config import ContextConfig, load_config, resolve_database_path
 from .corpus import open_review_database
 from .debug_log import debug_log_path
-from .language_profiles import language_match_codes
-from .normalizer import is_unsegmented_language
+from .language_profiles import language_match_codes, normalize_language_code
+from .normalizer import SNOWBALL_LANGUAGES, is_unsegmented_language
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,7 @@ def collect_diagnostics(mw: Any, addon_name: str) -> DiagnosticReport:
         database_check = DiagnosticCheck("Corpus database", "error", "invalid path: %s" % exc)
     checks = [
         _config_check(config),
+        _matching_check(config),
         database_check,
         _scheduler_check(mw),
         _native_undo_check(mw),
@@ -94,6 +95,25 @@ def _config_check(config: ContextConfig) -> DiagnosticCheck:
         "profile=%s, language=%s, field=%s, matching=%s"
         % (profile, config.language, config.target_field, config.matching_mode),
     )
+
+
+def _matching_check(config: ContextConfig) -> DiagnosticCheck:
+    language = normalize_language_code(config.language)
+    if config.matching_mode == "exact_form":
+        detail = "Exact word form selected; inflected forms are not expanded."
+    elif language in SNOWBALL_LANGUAGES:
+        detail = "Bundled Snowball rules for %s; imported irregular forms also supported." % language
+    elif language in {"en", "de"}:
+        detail = "Basic word-ending rules for %s; import word forms for missing irregulars." % language
+    elif is_unsegmented_language(language):
+        detail = "Embedded-expression matching; import word forms for additional variants."
+    else:
+        return DiagnosticCheck(
+            "Vocabulary matching", "warning",
+            "No built-in stemmer for %s. Lemma family relies on imported word forms; "
+            "import mappings in Advanced settings for missing inflections." % language,
+        )
+    return DiagnosticCheck("Vocabulary matching", "ok", detail)
 
 
 def _database_check(path: Path, language: str) -> DiagnosticCheck:

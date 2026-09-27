@@ -45,6 +45,25 @@ For recall, sentence audio becomes available after revealing the solution; recog
 
 Advanced settings contain custom sentence and word-form imports, template mapping, and technical controls. Most users can begin with Basic Setup. A larger relevant library improves the chance of varied sentences; repeated examples can occur when few sentences match your due words.
 
+## Matching word forms
+
+**Advanced → Vocabulary matching → Lemma family** uses built-in rules for
+Arabic, Danish, Dutch, Finnish, French, Greek, Italian, Portuguese, Russian,
+Spanish, Swedish, and Turkish. English and German use basic word-ending rules.
+Existing sentence libraries work without reimporting. The first search after
+starting Anki or changing a library can take several seconds while word families
+are prepared; later searches reuse that work.
+
+Polish and Ukrainian need imported word-form mappings to connect inflections.
+Japanese, Korean, and Chinese use embedded-expression matching. Diagnostics
+reports the matching support for your selected language.
+
+Stemming is approximate: it can miss irregulars and group different words.
+Import a two-column file (**sentence form**, **base card word**) for missing
+forms, or choose **Exact word form** for stricter matching. Several due words
+can share a sentence only when your library contains a suitable example;
+increasing the due-card limit does not guarantee multiple targets.
+
 ## What changes in Anki
 
 Review answers and Start Learning change card scheduling. The add-on uses native Anki scheduling, including FSRS. Opening Settings or revealing a solution alone does not grade a card. Adding vocabulary and exporting favorites can create or reuse notes. Keep Anki's normal backups enabled.

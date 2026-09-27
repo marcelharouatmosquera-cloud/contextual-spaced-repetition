@@ -134,9 +134,13 @@ audio, and mining. The study did not evaluate this add-on.
 </ul>
 
 <h2>Optional: match inflected forms</h2>
-<p>Import a two-column word-form file when forms such as <code>went → go</code>
-or <code>Hunde → Hund</code> should match. Then choose
-<b>Vocabulary matching → Lemma family</b>.</p>
+<p><b>Vocabulary matching → Lemma family</b> uses built-in rules for Arabic,
+Danish, Dutch, English, Finnish, French, German, Greek, Italian, Portuguese,
+Russian, Spanish, Swedish, and Turkish. Rules are approximate. A two-column
+word-form file maps sentence forms to card words, e.g. <code>went → go</code>.
+Import mappings for missing irregulars; Polish and Ukrainian need
+these mappings for inflections. Diagnostics shows your language's coverage.
+Choose <b>Exact word form</b> for stricter matching.</p>
 
 <h2>Shortcuts</h2>
 <ul>

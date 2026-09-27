@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
+import subprocess
+import sys
 import unittest
 import zipfile
 from pathlib import Path
@@ -89,6 +91,33 @@ class PackagingTests(unittest.TestCase):
             self.assertIn("docs/USER_GUIDE.md", names)
             self.assertNotIn("tests/test_packaging.py", names)
             self.assertFalse(any(name.startswith("contextual_review/_vendor/bin/") for name in names))
+
+    def test_packaged_stemmers_work_without_installed_dependencies(self) -> None:
+        packager = load_packager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp = Path(tempdir)
+            output = temp / "addon.ankiaddon"
+            packager.package_addon(output, None)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertIn("contextual_review/_vendor/snowballstemmer-3.0.1.dist-info/licenses/COPYING", archive.namelist())
+                archive.extractall(temp / "unpacked")
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from contextual_review.normalizer import SNOWBALL_LANGUAGES, normalize_word
+from contextual_review import normalizer
+assert Path(normalizer.__file__).is_relative_to(Path(sys.argv[1]))
+for language in SNOWBALL_LANGUAGES:
+    assert normalize_word('example', language)
+assert normalize_word('cheval', 'fr') == normalize_word('chevaux', 'fr')
+assert normalize_word('поездка', 'ru') == normalize_word('поездке', 'ru')
+""", str(temp / "unpacked")],
+                capture_output=True, text=True, cwd=temp, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

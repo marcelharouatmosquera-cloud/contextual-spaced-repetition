@@ -21,6 +21,7 @@ from .normalizer import (
     uses_stem_expansion,
 )
 from .types import DueCard, ReviewTask, SentenceCandidate, TargetWordDefinition, Token
+from .word_families import family_index
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sentences (
@@ -76,6 +77,7 @@ class QueryExpansion:
     base_key: str
     forms: FrozenSet[str]
     wildcard_prefix: str = ""
+    mapped_forms: FrozenSet[str] = frozenset()
 
 
 def connect_database(path: Path) -> sqlite3.Connection:
@@ -953,14 +955,10 @@ def _due_by_key(
     if uses_stem_expansion(language):
         # Stored bases may predate this language's stemmer, so they cannot
         # override the stem. The stem itself identifies the word family.
-        # Stem the surface form: stemming is not idempotent, so a stored key
-        # (already a stem) is only used as it is.
+        # Anki's bridge computes the key from the original token. word_form
+        # has already lost accents and must never be fed back to the stemmer.
         for card in due_cards:
-            key = (
-                normalize_word(card.word_form, language)
-                if card.word_form
-                else card.match_key or normalize_word(card.target_word, language)
-            )
+            key = card.match_key or normalize_word(card.target_word, language)
             if key:
                 due_by_lemma.setdefault(key, []).append(card)
         return _prefer_recognition_for_mixed_keys(due_by_lemma)
@@ -1062,10 +1060,33 @@ def _query_expansions(
             for base_key in base_keys
         ]
     if uses_stem_expansion(language):
+        families = family_index(conn, language)
+        # Preserve explicitly imported irregular forms (e.g. suis -> être).
+        # Legacy identity mappings must not override the new language rules.
+        mapped_by_key: Dict[str, Set[str]] = {}
+        bases_to_keys: Dict[str, Set[str]] = {}
+        for key, cards in due_by_key.items():
+            for card in cards:
+                base = card.word_form or normalize_form(card.target_word)
+                bases_to_keys.setdefault(base, set()).add(key)
+        bases = sorted(bases_to_keys)
+        for offset in range(0, len(bases), 400):
+            chunk = bases[offset : offset + 400]
+            rows = conn.execute(
+                "SELECT form, base FROM word_forms WHERE base IN (%s) AND form != base"
+                % ",".join("?" for _ in chunk), chunk,
+            )
+            for row in rows:
+                for key in bases_to_keys.get(str(row["base"]), ()):
+                    mapped_by_key.setdefault(key, set()).add(normalize_form(row["form"]))
         return [
             QueryExpansion(
                 base_key=base_key,
-                forms=frozenset(_stem_family_forms(conn, base_key, language) or (base_key,)),
+                forms=frozenset(families.get(base_key, ()))
+                | frozenset(mapped_by_key.get(base_key, ()))
+                | frozenset(card.word_form or normalize_form(card.target_word)
+                            for card in due_by_key[base_key]),
+                mapped_forms=frozenset(mapped_by_key.get(base_key, ())),
             )
             for base_key in base_keys
         ]
@@ -1096,21 +1117,6 @@ def _query_expansions(
         )
         for base_key in base_keys
     ]
-
-
-def _stem_family_forms(conn: sqlite3.Connection, stem: str, language: str) -> Set[str]:
-    """Return corpus word forms whose stem is exactly ``stem``.
-
-    Suffix stripping keeps the stem as a prefix of every form, so an indexed
-    prefix range finds the candidates. The exact stem check then rejects
-    unrelated longer words, such as столица for стол.
-    """
-    rows = conn.execute(
-        "SELECT DISTINCT form FROM word_forms WHERE form >= ? AND form < ?",
-        (stem, stem + "\uffff"),
-    ).fetchall()
-    forms = {normalize_form(str(row["form"])) for row in rows}
-    return {form for form in forms if form and normalize_word(form, language) == stem}
 
 
 def _sentence_key_set(key_list: str) -> Set[str]:
@@ -1178,6 +1184,15 @@ def _tokens_for_sentence(
         if token.is_word:
             form = normalize_form(token.text)
             matched_bases = _bases_for_form(form, expansions)
+            if matching_mode != "exact_form" and uses_stem_expansion(language):
+                # FTS uses folded spellings. Check the original token before
+                # assigning cards, so a lossy index cannot silently grade an
+                # unrelated word. Explicit word-form imports remain usable.
+                matched_bases = [
+                    expansion.base_key for expansion in expansions
+                    if expansion.base_key in matched_bases
+                    and (token.lemma == expansion.base_key or form in expansion.mapped_forms)
+                ]
             match_key = matched_bases[0] if matched_bases else matching_key_for_word(
                 token.text,
                 language,
@@ -1197,6 +1212,8 @@ def _tokens_for_sentence(
                 due_cards_by_id,
             )
             is_target = bool(card_ids) or (match_key in target_lemmas if match_key else False)
+            if matching_mode != "exact_form" and uses_stem_expansion(language):
+                is_target = bool(card_ids)
         else:
             match_key = ""
             card_ids = ()

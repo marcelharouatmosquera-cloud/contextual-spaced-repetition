@@ -2,9 +2,14 @@
 
 ## 1.1.0
 
-- Match Russian words in all their inflected forms. Russian vocabulary was only
-  found in its dictionary form, so most sentences containing a due word were
-  missed and two due words rarely shared a sentence.
+- Bundle Snowball 3.0.1 for Arabic, Danish, Dutch, Finnish, French, Greek,
+  Italian, Portuguese, Russian, Spanish, Swedish, and Turkish word families.
+  Replace the hand-written Russian stemmer with the official implementation.
+- Stem original spellings before folding accents, search existing sentence
+  libraries without reimporting, and retain imported irregular word forms.
+  Recheck visible words before assigning review cards.
+- Explain matching coverage in Diagnostics, including missing built-in rules
+  for Polish and Ukrainian. Stemming does not cover every inflection.
 - Search 100 due cards per sentence instead of 20, giving the most urgent word
   more due companions to share a sentence with. Settings still at the old
   default of 20 are raised once; other values are kept.

@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib import import_module
+from threading import local
 from typing import Iterable, List
 
 from .language_profiles import normalize_language_code, profile_ignored_words
 
-COMBINING_MARKS = "\u0300-\u036f"
+COMBINING_MARKS = "\u0300-\u036f\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed"
 LETTER_WITH_MARKS = r"[^\W\d_][%s]*" % COMBINING_MARKS
 WORD_RE = re.compile(
     r"((?:%s)+(?:['\u2019\-](?:%s)+)*)"
@@ -38,35 +41,15 @@ EN_IRREGULARS = {
 }
 
 UNSEGMENTED_LANGUAGE_CODES = {"ja", "ko", "zh"}
-STEM_EXPANSION_LANGUAGE_CODES = {"ru"}
+# Keep the established English/German rules and their imported mappings.
+# Other profiled alphabetic languages use the bundled Snowball algorithms.
+SNOWBALL_LANGUAGES = {
+    "ar": "arabic", "da": "danish", "el": "greek", "es": "spanish",
+    "fi": "finnish", "fr": "french", "it": "italian", "nl": "dutch",
+    "pt": "portuguese", "ru": "russian", "sv": "swedish", "tr": "turkish",
+}
+_STEMMERS = local()
 
-# Snowball Russian stemmer endings, written as they appear after
-# normalize_form(): its diacritic folding turns й into и and ё into е.
-# https://snowballstem.org/algorithms/russian/stemmer.html
-RU_VOWELS = frozenset("аеиоуыэюя")
-RU_PERFECTIVE_GERUND = (("в", "вши", "вшись"), ("ив", "ивши", "ившись", "ыв", "ывши", "ывшись"))
-RU_ADJECTIVE = (
-    "ее", "ие", "ые", "ое", "ими", "ыми", "еи", "ии", "ыи", "ои", "ем", "им", "ым",
-    "ом", "его", "ого", "ему", "ому", "их", "ых", "ую", "юю", "ая", "яя", "ою", "ею",
-)
-RU_PARTICIPLE = (("ем", "нн", "вш", "ющ", "щ"), ("ивш", "ывш", "ующ"))
-RU_REFLEXIVE = ("ся", "сь")
-RU_VERB = (
-    # Snowball's group-one "йте" folds to "ите", which group two removes anyway.
-    ("ла", "на", "ете", "ли", "и", "л", "ем", "н", "ло", "но", "ет", "ют", "ны", "ть", "ешь", "нно"),
-    (
-        "ила", "ыла", "ена", "еите", "уите", "ите", "или", "ыли", "еи", "уи", "ил", "ыл",
-        "им", "ым", "ен", "ило", "ыло", "ено", "ят", "ует", "уют", "ит", "ыт", "ены",
-        "ить", "ыть", "ишь", "ую", "ю",
-    ),
-)
-RU_NOUN = (
-    "а", "ев", "ов", "ие", "ье", "е", "иями", "ями", "ами", "еи", "ии", "и", "иеи",
-    "ои", "иям", "ям", "ием", "ем", "ам", "ом", "о", "у", "ах", "иях", "ях", "ы", "ь",
-    "ию", "ью", "ю", "ия", "ья", "я",
-)
-RU_SUPERLATIVE = ("еиш", "еише")
-RU_DERIVATIONAL = ("ост", "ость")
 
 @dataclass(frozen=True)
 class WordToken:
@@ -106,8 +89,8 @@ def normalize_word(word: str, language: str = "en") -> str:
         return _stem_english(text)
     if lang == "de":
         return _stem_german(text)
-    if lang == "ru":
-        return _stem_russian(text)
+    if lang in SNOWBALL_LANGUAGES:
+        return _snowball_stem(stemmer_form(word, lang), lang)
     return text
 
 
@@ -117,7 +100,7 @@ def uses_stem_expansion(language: str) -> bool:
     Corpora imported before a language gained a stemmer store each form as its
     own base, so these languages cannot rely on the stored ``word_forms`` bases.
     """
-    return normalize_language_code(language) in STEM_EXPANSION_LANGUAGE_CODES
+    return normalize_language_code(language) in SNOWBALL_LANGUAGES
 
 
 def lookup_form(word: str, language: str = "en") -> str:
@@ -257,57 +240,31 @@ def _stem_german(text: str) -> str:
     return text
 
 
-def _stem_russian(text: str) -> str:
-    """Snowball Russian stemmer applied to a normalize_form() word."""
-    rv = next((index + 1 for index, char in enumerate(text) if char in RU_VOWELS), len(text))
-    r2 = _russian_region(text, _russian_region(text, 0))
-    word, removed = _remove_russian_ending(text, rv, *RU_PERFECTIVE_GERUND)
-    if not removed:
-        word, _ = _remove_russian_ending(word, rv, (), RU_REFLEXIVE)
-        word, removed = _remove_russian_ending(word, rv, (), RU_ADJECTIVE)
-        if removed:
-            word, _ = _remove_russian_ending(word, rv, *RU_PARTICIPLE)
-        else:
-            word, removed = _remove_russian_ending(word, rv, *RU_VERB)
-            if not removed:
-                word, _ = _remove_russian_ending(word, rv, (), RU_NOUN)
-    if word.endswith("и") and len(word) - 1 >= rv:
-        word = word[:-1]
-    word, _ = _remove_russian_ending(word, r2, (), RU_DERIVATIONAL)
-    word, removed = _remove_russian_ending(word, rv, (), RU_SUPERLATIVE)
-    if word.endswith("нн") and len(word) - 2 >= rv:
-        word = word[:-1]
-    elif not removed and word.endswith("ь") and len(word) - 1 >= rv:
-        word = word[:-1]
-    return word
+def stemmer_form(word: str, language: str) -> str:
+    """Keep linguistic letters until after stemming (й, ñ, accents, dotless ı)."""
+    text = unicodedata.normalize("NFC", str(word))
+    if language == "tr":
+        text = text.replace("I", "ı").replace("İ", "i")
+    if language == "ru":
+        text = text.replace("\u0301", "")  # optional dictionary stress
+    return _strip_non_letters(text.lower())
 
 
-def _russian_region(word: str, start: int) -> int:
-    """Return the index after the first non-vowel following a vowel."""
-    for index in range(start + 1, len(word)):
-        if word[index] not in RU_VOWELS and word[index - 1] in RU_VOWELS:
-            return index + 1
-    return len(word)
-
-
-def _remove_russian_ending(
-    word: str, start: int, preceded_endings: Iterable[str], plain_endings: Iterable[str]
-) -> tuple[str, bool]:
-    """Remove the longest ending inside the region, as Snowball's among does.
-
-    Endings in the first group only count after а or я, which is kept.
-    """
-    best, preceded = "", False
-    for group_preceded, endings in ((True, preceded_endings), (False, plain_endings)):
-        for ending in endings:
-            if len(ending) > len(best) and len(word) - len(ending) >= start and word.endswith(ending):
-                best, preceded = ending, group_preceded
-    if not best:
-        return word, False
-    stem = word[: -len(best)]
-    if preceded and not (len(stem) > start and stem[-1] in "ая"):
-        return word, False
-    return stem, True
+@lru_cache(maxsize=65536)
+def _snowball_stem(text: str, language: str) -> str:
+    # Generated stemmers mutate their working buffer. Never share an instance
+    # between Anki's GUI thread and the background sentence/import workers.
+    if not hasattr(_STEMMERS, "by_language"):
+        _STEMMERS.by_language = {}
+    stemmer = _STEMMERS.by_language.get(language)
+    if stemmer is None:
+        algorithm = SNOWBALL_LANGUAGES[language]
+        module = import_module("._vendor.snowballstemmer.%s_stemmer" % algorithm, __package__)
+        # Use the bundled pure-Python class even if another add-on installed
+        # the optional native Stemmer module or a different Snowball version.
+        stemmer = getattr(module, algorithm.title() + "Stemmer")()
+        _STEMMERS.by_language[language] = stemmer
+    return normalize_form(stemmer.stemWord(text))
 
 
 def _undouble_final(text: str) -> str:
