@@ -220,6 +220,11 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
                 if not getattr(self, "_today_goal_initialized", False):
                     self.today_goal_card_ids = collected_today_ids
                     self._today_goal_initialized = True
+                else:
+                    # Relearning and deferred cards can become eligible after
+                    # the first search. Include them without dropping cards
+                    # already completed and therefore absent from this search.
+                    self.today_goal_card_ids.update(collected_today_ids)
             # A cached DueCard reflects the card's state before it was graded.
             # Hide every card already reviewed from that cache, including cards
             # answered Again. Once the cache is refreshed, Anki's current due
@@ -522,6 +527,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             self._load_next_task()
             return
 
+        self._grade_started_at = time.perf_counter()
+        grade_started = self._grade_started_at
         is_mined_introduction = bool(
             getattr(self.active_task, "is_mined_introduction", False)
         )
@@ -556,6 +563,9 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             )
             return
 
+        append_debug_log("review_grade_timing", stage="scheduler_and_main_window_refresh",
+                         elapsed_ms=round((time.perf_counter() - grade_started) * 1000, 1))
+        companion_started = time.perf_counter()
         question_started = getattr(self, "_sprachschloss_question_started", None)
         review_seconds = (
             max(0.0, time.monotonic() - float(question_started))
@@ -563,6 +573,8 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
             else 0.0
         )
         _report_sprachschloss_answer(summary, review_seconds)
+        append_debug_log("review_grade_timing", stage="companion_callback",
+                         elapsed_ms=round((time.perf_counter() - companion_started) * 1000, 1))
 
         completed_card_ids = getattr(summary, "completed_card_ids", None)
         if completed_card_ids is None:
@@ -1188,6 +1200,7 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         )
 
     def _set_html(self, html: str) -> None:
+        self._page_load_started_at = time.perf_counter()
         try:
             try:
                 self.web.stdHtml(html, context=self)
@@ -1204,6 +1217,15 @@ class ContextualReviewDialog:  # pragma: no cover - exercised inside Anki
         """Start page work only after Anki's JavaScript bridge is ready."""
         if not loaded:
             return
+        now = time.perf_counter()
+        page_started = getattr(self, "_page_load_started_at", None)
+        grade_started = getattr(self, "_grade_started_at", None)
+        if page_started is not None:
+            append_debug_log("review_page_ready_timing",
+                             page_load_ms=round((now - page_started) * 1000, 1),
+                             since_grade_ms=(round((now - grade_started) * 1000, 1)
+                                             if grade_started is not None else None))
+        self._grade_started_at = None
         try:
             self.web.eval(
                 "if (typeof window.contextualPageReady === 'function') { "

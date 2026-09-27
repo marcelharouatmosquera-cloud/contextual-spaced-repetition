@@ -1048,7 +1048,7 @@ class ReviewerBridgeTests(unittest.TestCase):
         self.assertIsNone(dialog._due_cards_cache)
         self.assertEqual(retries, [True])
 
-    def test_today_progress_counts_only_initially_due_cards(self) -> None:
+    def test_today_progress_counts_only_cards_in_today_goal(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         task = ReviewTask(1, "en", "We review.", None, [], {"review": [10]})
         dialog.today_goal_card_ids = {10, 20, 30}
@@ -1321,7 +1321,7 @@ class ReviewerBridgeTests(unittest.TestCase):
 
         self.assertEqual(migration_calls, [dialog.db_path])
 
-    def test_fresh_due_search_keeps_the_session_start_goal_fixed(self) -> None:
+    def test_newly_due_relearning_card_advances_progress_when_completed(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)
         dialog.db_path = SimpleNamespace(exists=lambda: True)
         dialog.config = normalize_config({})
@@ -1355,6 +1355,9 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.collect_due_cards = lambda *args, **kwargs: batches.pop(0)
             reviewer.select_review_task = lambda *args, **kwargs: task
             dialog._load_next_task()
+            dialog.answered_card_ids = {7}
+            dialog.learning_card_ids = set()
+            self.assertEqual(dialog._today_progress(), (1, 0, 2))
             dialog.active_task = None
             dialog._due_cards_cache = None
             dialog._load_next_task(refresh_due_cards=True)
@@ -1362,7 +1365,18 @@ class ReviewerBridgeTests(unittest.TestCase):
             reviewer.collect_due_cards = original_collect
             reviewer.select_review_task = original_select
 
-        self.assertEqual(dialog.today_goal_card_ids, {7, 8})
+        # Card 9 became due after the session began. Preserve completed card 7
+        # while adding 9 to the goal, even before it leaves relearning.
+        self.assertEqual(dialog.today_goal_card_ids, {7, 8, 9})
+        dialog.learning_card_ids = {9}
+        self.assertEqual(dialog._today_progress(), (1, 1, 3))
+        dialog.learning_card_ids.clear()
+        dialog.answered_card_ids.add(9)
+        self.assertEqual(dialog._today_progress(), (2, 0, 3))
+        # Undo restores learning rather than removing the card from the goal.
+        dialog.answered_card_ids.remove(9)
+        dialog.learning_card_ids.add(9)
+        self.assertEqual(dialog._today_progress(), (1, 1, 3))
 
     def test_cached_again_card_waits_for_fresh_anki_due_search(self) -> None:
         dialog = ContextualReviewDialog.__new__(ContextualReviewDialog)

@@ -1,10 +1,12 @@
-"""Small cached wrapper around the bundled deep-translator Google client."""
+"""Cached Google translation with an independent fallback during rate limits."""
 
 from __future__ import annotations
 
 import sys
 from functools import lru_cache
+from html import unescape
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from .language_profiles import normalize_language_code
@@ -17,6 +19,11 @@ TRANSLATION_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/140.0.0.0 Safari/537.36"
 )
+MYMEMORY_TRANSLATE_URL = "https://api.mymemory.translated.net/get"
+GOOGLE_HTML_RATE_LIMIT_COOLDOWN_SECONDS = 300
+
+
+_google_html_rate_limited_until = 0.0
 
 
 class _RequestsTimeoutProxy:
@@ -46,7 +53,7 @@ class _RequestsTimeoutProxy:
 
 @lru_cache(maxsize=512)
 def translate_text(text: str, source_language: str, target_language: str) -> str:
-    """Translate text with Google through deep-translator and cache the result."""
+    """Translate text, falling back during Google rate limits; cache successes."""
     value = str(text or "").strip()
     if not value:
         raise ValueError("There is no text to translate.")
@@ -56,12 +63,80 @@ def translate_text(text: str, source_language: str, target_language: str) -> str
     if source == target:
         return value
 
-    GoogleTranslator = _configure_google_timeout(_load_google_translator())
-    translated = GoogleTranslator(source=source, target=target).translate(value)
+    if monotonic() < _google_html_rate_limited_until:
+        translated = _translate_with_mymemory(value, source, target)
+    else:
+        GoogleTranslator = _configure_google_timeout(_load_google_translator())
+        try:
+            translated = GoogleTranslator(source=source, target=target).translate(value)
+        except Exception as exc:
+            if not _is_rate_limit_error(exc):
+                raise
+            _remember_google_html_rate_limit()
+            translated = _translate_with_mymemory(value, source, target)
     result = str(translated or "").strip()
     if not result:
-        raise RuntimeError("Google returned an empty translation.")
+        raise RuntimeError("The translation service returned an empty translation.")
     return result
+
+
+def _remember_google_html_rate_limit() -> None:
+    global _google_html_rate_limited_until
+    _google_html_rate_limited_until = (
+        monotonic() + GOOGLE_HTML_RATE_LIMIT_COOLDOWN_SECONDS
+    )
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    detail = f"{type(exc).__name__}: {exc}".casefold()
+    return any(
+        marker in detail
+        for marker in ("toomanyrequests", "too many requests", "rate limit", "429")
+    )
+
+
+def _translate_with_mymemory(text: str, source: str, target: str) -> str:
+    """Use an independent provider when Google's HTML endpoint is rate-limited."""
+    if source == "auto":
+        raise RuntimeError("The fallback service requires a known source language.")
+    if len(text.encode("utf-8")) > 500:
+        raise RuntimeError("The text exceeds the fallback service's 500-byte limit.")
+    requests = _load_requests()
+    response = requests.get(
+        MYMEMORY_TRANSLATE_URL,
+        params={
+            "q": text,
+            "langpair": f"{source}|{target}",
+        },
+        headers={"User-Agent": TRANSLATION_USER_AGENT},
+        timeout=(TRANSLATION_CONNECT_TIMEOUT_SECONDS, TRANSLATION_READ_TIMEOUT_SECONDS),
+    )
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    finally:
+        response.close()
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("The fallback service returned an invalid response.")
+    status = str(payload.get("responseStatus", ""))
+    if status != "200" or payload.get("quotaFinished"):
+        detail = str(payload.get("responseDetails") or "").strip()
+        if status == "429" or payload.get("quotaFinished"):
+            raise RuntimeError("The fallback translation service rate limit was reached.")
+        raise RuntimeError(detail or "The fallback service rejected the translation.")
+    try:
+        response_data = payload.get("responseData")
+        translated = response_data.get("translatedText")
+        if not isinstance(translated, str):
+            raise TypeError("Translation must be text")
+        translated = unescape(translated).strip()
+    except (AttributeError, TypeError) as exc:
+        raise RuntimeError("The fallback service returned an invalid response.") from exc
+    if not translated:
+        detail = str(payload.get("responseDetails") or "").strip()
+        raise RuntimeError(detail or "The fallback service returned no translation.")
+    return translated
 
 
 def _configure_google_timeout(translator_class: Any) -> Any:
@@ -94,3 +169,20 @@ def _load_google_translator():
             raise RuntimeError(
                 "The bundled deep-translator component could not be loaded."
             ) from exc
+
+
+def _load_requests():
+    try:
+        import requests
+
+        return requests
+    except ImportError:
+        vendor_path = Path(__file__).resolve().parent / "_vendor"
+        if str(vendor_path) not in sys.path:
+            sys.path.append(str(vendor_path))
+        try:
+            import requests
+
+            return requests
+        except ImportError as exc:
+            raise RuntimeError("The bundled HTTP component could not be loaded.") from exc
