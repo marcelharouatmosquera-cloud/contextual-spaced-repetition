@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from .config import addon_user_root
 
 LOG_PATH = Path("user_files") / "contextual_review.log"
 MAX_LOG_BYTES = 1_000_000
+# Translation, TTS, and sentence search log from background threads.
+_LOG_LOCK = threading.Lock()
 
 
 def debug_log_path() -> Path:
@@ -22,14 +25,16 @@ def append_debug_log(event: str, **fields: Any) -> None:
     try:
         path = debug_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        _rotate_if_needed(path)
         payload = {
             "time": datetime.now().isoformat(timespec="seconds"),
             "event": str(event),
         }
         payload.update({str(key): _json_safe(value) for key, value in fields.items()})
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        line = json.dumps(payload, sort_keys=True) + "\n"
+        with _LOG_LOCK:
+            _rotate_if_needed(path)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
     except Exception:
         pass
 
