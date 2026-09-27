@@ -13,9 +13,12 @@ from .normalizer import (
     contains_unsegmented_script,
     count_words,
     is_unsegmented_language,
+    lookup_form,
     matching_key_for_word,
     normalize_form,
+    normalize_word,
     split_text_tokens,
+    uses_stem_expansion,
 )
 from .types import DueCard, ReviewTask, SentenceCandidate, TargetWordDefinition, Token
 
@@ -290,7 +293,7 @@ def select_review_task(
         filters = _CandidateFilter.for_review(
             min_sentence_words, max_sentence_words, shown_sentence_ids
         )
-        all_due_by_key = _due_by_key(conn, due_cards, matching_mode)
+        all_due_by_key = _due_by_key(conn, due_cards, matching_mode, language)
         if not all_due_by_key:
             return None
         excluded_anchor_keys = set(_excluded_anchor_keys or ())
@@ -299,7 +302,7 @@ def select_review_task(
             return None
         anchor_direction = _due_card_direction(all_due_by_key[anchor_key][0])
         due_by_key = _due_keys_for_direction(all_due_by_key, anchor_direction)
-        expansions = _query_expansions(conn, due_by_key, matching_mode)
+        expansions = _query_expansions(conn, due_by_key, matching_mode, language)
         if not expansions:
             return None
         anchor_expansions = [
@@ -935,12 +938,29 @@ def _candidate_sql(
 
 
 def _due_by_key(
-    conn: sqlite3.Connection, due_cards: Sequence[DueCard], matching_mode: str
+    conn: sqlite3.Connection,
+    due_cards: Sequence[DueCard],
+    matching_mode: str,
+    language: str = "",
 ) -> Dict[str, List[DueCard]]:
     due_by_lemma: Dict[str, List[DueCard]] = {}
     if matching_mode == "exact_form":
         for card in due_cards:
             key = card.match_key or card.word_form or normalize_form(card.target_word)
+            if key:
+                due_by_lemma.setdefault(key, []).append(card)
+        return _prefer_recognition_for_mixed_keys(due_by_lemma)
+    if uses_stem_expansion(language):
+        # Stored bases may predate this language's stemmer, so they cannot
+        # override the stem. The stem itself identifies the word family.
+        # Stem the surface form: stemming is not idempotent, so a stored key
+        # (already a stem) is only used as it is.
+        for card in due_cards:
+            key = (
+                normalize_word(card.word_form, language)
+                if card.word_form
+                else card.match_key or normalize_word(card.target_word, language)
+            )
             if key:
                 due_by_lemma.setdefault(key, []).append(card)
         return _prefer_recognition_for_mixed_keys(due_by_lemma)
@@ -1031,6 +1051,7 @@ def _query_expansions(
     conn: sqlite3.Connection,
     due_by_key: Dict[str, List[DueCard]],
     matching_mode: str,
+    language: str = "",
 ) -> List[QueryExpansion]:
     base_keys = sorted(
         {base_key for key in due_by_key if (base_key := normalize_form(key))}
@@ -1038,6 +1059,14 @@ def _query_expansions(
     if matching_mode == "exact_form":
         return [
             QueryExpansion(base_key=base_key, forms=frozenset((base_key,)))
+            for base_key in base_keys
+        ]
+    if uses_stem_expansion(language):
+        return [
+            QueryExpansion(
+                base_key=base_key,
+                forms=frozenset(_stem_family_forms(conn, base_key, language) or (base_key,)),
+            )
             for base_key in base_keys
         ]
 
@@ -1067,6 +1096,21 @@ def _query_expansions(
         )
         for base_key in base_keys
     ]
+
+
+def _stem_family_forms(conn: sqlite3.Connection, stem: str, language: str) -> Set[str]:
+    """Return corpus word forms whose stem is exactly ``stem``.
+
+    Suffix stripping keeps the stem as a prefix of every form, so an indexed
+    prefix range finds the candidates. The exact stem check then rejects
+    unrelated longer words, such as столица for стол.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT form FROM word_forms WHERE form >= ? AND form < ?",
+        (stem, stem + "\uffff"),
+    ).fetchall()
+    forms = {normalize_form(str(row["form"])) for row in rows}
+    return {form for form in forms if form and normalize_word(form, language) == stem}
 
 
 def _sentence_key_set(key_list: str) -> Set[str]:
@@ -1166,7 +1210,7 @@ def _tokens_for_sentence(
                 is_word=token.is_word,
                 is_target=is_target,
                 match_key=match_key,
-                lookup_text=normalize_form(token.text) if token.is_word else "",
+                lookup_text=lookup_form(token.text, language) if token.is_word else "",
                 card_ids=card_ids,
                 direction=direction,
                 hint=hint,

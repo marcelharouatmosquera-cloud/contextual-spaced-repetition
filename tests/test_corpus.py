@@ -30,6 +30,7 @@ from contextual_review.types import (
     Token,
 )
 from contextual_review.importer import sentence_word_map
+from contextual_review.normalizer import matching_key_for_word, normalize_form, normalize_word
 
 
 class CorpusTests(unittest.TestCase):
@@ -1106,6 +1107,101 @@ class CorpusTests(unittest.TestCase):
         ordered = sorted([untranslated, translated], key=_candidate_sort_key)
 
         self.assertEqual([candidate.sentence_id for candidate in ordered], [1, 2])
+
+
+def _russian_due_card(card_id: int, word: str) -> DueCard:
+    return DueCard(
+        card_id=card_id,
+        target_word=word,
+        lemma=normalize_word(word, "ru"),
+        word_form=normalize_form(word),
+        match_key=matching_key_for_word(word, "ru", "lemma_family"),
+        definition="hint",
+    )
+
+
+class RussianLemmaFamilyTests(unittest.TestCase):
+    def _legacy_russian_db(self, tempdir: str, sentences) -> Path:
+        # Libraries imported before the Russian stemmer store every form as
+        # its own base, so matching must not depend on stored bases.
+        db_path = Path(tempdir) / "sentences.db"
+        initialize_database(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for sentence in sentences:
+                forms = {normalize_form(word): normalize_form(word) for word in sentence.split()}
+                insert_sentence(conn, "ru", sentence, None, forms)
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_inflected_forms_match_in_a_library_with_identity_word_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._legacy_russian_db(tempdir, ["Мы говорим о поездке домой."])
+
+            task = select_review_task(
+                db_path, [_russian_due_card(1, "поездка")], "ru", set(), 10,
+                matching_mode="lemma_family",
+            )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            target = next(token for token in task.tokens if token.text == "поездке")
+            self.assertTrue(target.is_target)
+            self.assertEqual(target.card_ids, (1,))
+
+    def test_inflected_forms_let_two_due_words_share_a_sentence(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._legacy_russian_db(
+                tempdir,
+                [
+                    "Мы говорим о поездке домой.",
+                    "Он купил новый стол вчера.",
+                    "Перед поездкой мы продали старые столы.",
+                ],
+            )
+            due = [_russian_due_card(1, "поездка"), _russian_due_card(2, "стол")]
+
+            task = select_review_task(db_path, due, "ru", set(), 10, matching_mode="lemma_family")
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.full_text, "Перед поездкой мы продали старые столы.")
+            self.assertEqual(
+                sorted(card_id for ids in task.card_ids_by_key.values() for card_id in ids),
+                [1, 2],
+            )
+
+    def test_longer_word_with_the_same_prefix_is_not_a_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._legacy_russian_db(
+                tempdir,
+                ["Столица очень большая и красивая.", "Книга лежит на столе."],
+            )
+
+            task = select_review_task(
+                db_path, [_russian_due_card(1, "стол")], "ru", set(), 10,
+                matching_mode="lemma_family",
+            )
+
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.full_text, "Книга лежит на столе.")
+
+    def test_lookup_text_keeps_the_real_spelling(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._legacy_russian_db(tempdir, ["Мой друг любит поездки летом."])
+
+            task = select_review_task(
+                db_path, [_russian_due_card(1, "поездка")], "ru", set(), 10,
+                matching_mode="lemma_family",
+            )
+
+            assert task is not None
+            lookups = {token.text: token.lookup_text for token in task.tokens if token.is_word}
+            self.assertEqual(lookups["Мой"], "мой")
+            self.assertEqual(lookups["поездки"], "поездки")
 
 
 if __name__ == "__main__":

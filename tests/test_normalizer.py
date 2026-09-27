@@ -4,6 +4,7 @@ import unittest
 
 from contextual_review.normalizer import (
     count_words,
+    lookup_form,
     matching_key_for_word,
     normalize_form,
     normalize_word,
@@ -69,6 +70,51 @@ class NormalizerTests(unittest.TestCase):
     def test_content_word_extraction_uses_language_profile_words(self) -> None:
         tokens = select_target_tokens("el gato", "es", "content_words")
         self.assertEqual([token.text for token in tokens], ["gato"])
+
+    def test_russian_stemmer_matches_snowball_reference_stems(self) -> None:
+        # Stems given by the Snowball Russian algorithm, written after this
+        # add-on's й -> и and ё -> е folding.
+        expected = {
+            "вагонами": "вагон",
+            "важнейшие": "важн",
+            "вбежала": "вбежа",
+            "ввалился": "ввал",
+            "вашего": "ваш",
+            "сделавшись": "сдела",
+            "действительность": "деиствительн",
+            "длинный": "длин",
+        }
+        for word, stem in expected.items():
+            with self.subTest(word=word):
+                self.assertEqual(normalize_word(word, "ru"), stem)
+
+    def test_russian_lemma_family_joins_inflected_forms(self) -> None:
+        families = [
+            ["поездка", "поездку", "поездки", "поездке", "поездкой", "поездках"],
+            ["стол", "стола", "столу", "столом", "столе", "столов", "столами"],
+            ["красивый", "красивая", "красивое", "красивого", "красивыми"],
+            ["говорить", "говорю", "говорит", "говорите", "говорят", "говорили"],
+        ]
+        for family in families:
+            with self.subTest(word=family[0]):
+                self.assertEqual(
+                    {matching_key_for_word(word, "ru", "lemma_family") for word in family},
+                    {matching_key_for_word(family[0], "ru", "lemma_family")},
+                )
+        self.assertNotEqual(normalize_word("столица", "ru"), normalize_word("стол", "ru"))
+        self.assertEqual(matching_key_for_word("поездку", "ru", "exact_form"), "поездку")
+
+    def test_russian_stemmer_leaves_short_and_latin_words_intact(self) -> None:
+        self.assertEqual(normalize_word("он", "ru"), "он")
+        self.assertEqual(normalize_word("что", "ru"), "что")
+        self.assertEqual(normalize_word("Anki", "ru"), "anki")
+
+    def test_lookup_form_keeps_diacritics_for_dictionaries_and_mining(self) -> None:
+        self.assertEqual(lookup_form("Действительность", "ru"), "действительность")
+        self.assertEqual(lookup_form("Мой", "ru"), "мой")
+        self.assertEqual(lookup_form("ещё", "ru"), "ещё")
+        self.assertEqual(lookup_form("Mädchen", "de"), "Mädchen")
+        self.assertEqual(lookup_form("Café", "fr"), "café")
 
 
 if __name__ == "__main__":
