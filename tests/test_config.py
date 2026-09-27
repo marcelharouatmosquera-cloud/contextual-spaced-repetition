@@ -408,7 +408,39 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.database_path, DEFAULT_DATABASE_PATH)
             self.assertEqual(target.read_bytes(), b"legacy db")
-            self.assertEqual(mw.addonManager.written, ("addon", {"database_path": DEFAULT_DATABASE_PATH}))
+            self.assertEqual(
+                mw.addonManager.written,
+                ("addon", {"database_path": DEFAULT_DATABASE_PATH, "config_version": 2}),
+            )
+
+    def test_load_config_raises_legacy_default_due_card_window_once(self) -> None:
+        stored = {
+            "max_due_cards": 20,
+            "deck_configs": [
+                {"name": "Russian", "deck_name": "Russian", "max_due_cards": 20},
+                {"name": "German", "deck_name": "German", "max_due_cards": 35},
+            ],
+        }
+        mw = FakeMw(stored)
+
+        config = load_config(mw, "addon", deck_name="Russian")
+
+        self.assertEqual(config.max_due_cards, 100)
+        _name, written = mw.addonManager.written
+        self.assertEqual(written["config_version"], 2)
+        self.assertEqual(written["max_due_cards"], 100)
+        self.assertEqual(
+            [profile["max_due_cards"] for profile in written["deck_configs"]], [100, 35]
+        )
+
+        # A deliberate 20 saved after the upgrade is left alone.
+        mw.addonManager.config = dict(written, max_due_cards=20)
+        mw.addonManager.written = None
+        self.assertEqual(load_config(mw, "addon").max_due_cards, 20)
+        self.assertIsNone(mw.addonManager.written)
+
+    def test_new_default_due_card_window_is_one_hundred(self) -> None:
+        self.assertEqual(normalize_config({}).max_due_cards, 100)
 
 
 if __name__ == "__main__":

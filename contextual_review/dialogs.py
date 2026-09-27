@@ -257,8 +257,9 @@ def _open_settings_editor_dialog(
         showWarning("Choose a deck before editing Contextual Review settings.")
         return
 
-    raw = load_raw_config(mw, addon_name)
+    # load_config may write migrated settings, so read the stored JSON after it.
     config = load_config(mw, addon_name, deck_name=target_deck_name)
+    raw = load_raw_config(mw, addon_name)
     available_fields = _available_note_fields(mw, "configured", target_deck_name)
 
     dialog = QDialog(mw)

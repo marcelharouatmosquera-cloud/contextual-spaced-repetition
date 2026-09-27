@@ -18,7 +18,7 @@
   "language": "en",
   "native_language": "en",
   "database_path": "user_files/contextual_sentences.db",
-  "max_due_cards": 20,
+  "max_due_cards": 100,
   "max_imported_sentences": 100000,
   "min_sentence_words": 4,
   "max_sentence_words": 12,
@@ -42,5 +42,6 @@
   "known_ease": 3,
   "unknown_ease": 1,
   "font_size": 34,
-  "deck_configs": []
+  "deck_configs": [],
+  "config_version": 2
 }

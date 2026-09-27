@@ -17,6 +17,9 @@ DEFAULT_DATABASE_PATH = "user_files/contextual_sentences.db"
 LEGACY_DATABASE_PATH = "data/contextual_sentences.db"
 USER_ROOT_ENV = "CONTEXTUAL_REVIEW_USER_ROOT"
 DECK_CONFIGS_KEY = "deck_configs"
+CONFIG_VERSION_KEY = "config_version"
+CONFIG_VERSION = 2
+LEGACY_MAX_DUE_CARDS = 20
 DECK_CONFIG_META_KEYS = {
     "deck",
     "decks",
@@ -40,7 +43,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "language": "en",
     "native_language": "en",
     "database_path": DEFAULT_DATABASE_PATH,
-    "max_due_cards": 20,
+    "max_due_cards": 100,
     "max_imported_sentences": 100000,
     "min_sentence_words": 4,
     "max_sentence_words": 12,
@@ -65,6 +68,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "unknown_ease": 1,
     "font_size": 34,
     DECK_CONFIGS_KEY: [],
+    CONFIG_VERSION_KEY: CONFIG_VERSION,
 }
 
 
@@ -138,6 +142,9 @@ def load_config(mw: Optional[Any], addon_name: str, deck_name: Optional[str] = N
     addon_config: Dict[str, Any] = {}
     if mw is not None:
         addon_config = load_raw_config(mw, addon_name)
+        if addon_config and _int(addon_config.get(CONFIG_VERSION_KEY), 1) < CONFIG_VERSION:
+            addon_config = _migrate_config_version(addon_config)
+            _write_config(mw, addon_name, addon_config)
         raw.update(addon_config)
         if "custom_search_query" not in addon_config and "search_query" in addon_config:
             raw["custom_search_query"] = addon_config["search_query"]
@@ -203,7 +210,7 @@ def normalize_config(raw: Dict[str, Any]) -> ContextConfig:
         language=language,
         native_language=normalize_language_code(str(raw.get("native_language", "en") or "en")),
         database_path=_normalized_database_path(raw.get("database_path", DEFAULT_DATABASE_PATH)),
-        max_due_cards=_positive_int(raw.get("max_due_cards"), 20),
+        max_due_cards=_positive_int(raw.get("max_due_cards"), 100),
         max_imported_sentences=max(0, _int(raw.get("max_imported_sentences"), 100000)),
         min_sentence_words=min_sentence_words,
         max_sentence_words=max_sentence_words,
@@ -550,13 +557,42 @@ def _migrate_legacy_default_database() -> bool:
 
 
 def _write_migrated_database_config(mw: Any, addon_name: str, addon_config: Dict[str, Any]) -> None:
+    migrated = dict(addon_config)
+    migrated["database_path"] = DEFAULT_DATABASE_PATH
+    _write_config(mw, addon_name, migrated)
+
+
+def _migrate_config_version(addon_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Upgrade stored settings that still hold superseded defaults.
+
+    The settings dialog stores every value, so an old default cannot be told
+    apart from a choice. Version 2 raises the old 20-card search window: a
+    small window rarely leaves two due words that share a sentence.
+    """
+    migrated = dict(addon_config)
+    if _int(migrated.get("max_due_cards"), 0) == LEGACY_MAX_DUE_CARDS:
+        migrated["max_due_cards"] = DEFAULT_CONFIG["max_due_cards"]
+    profiles = migrated.get(DECK_CONFIGS_KEY)
+    if isinstance(profiles, list):
+        migrated[DECK_CONFIGS_KEY] = [
+            (
+                dict(profile, max_due_cards=DEFAULT_CONFIG["max_due_cards"])
+                if isinstance(profile, dict)
+                and _int(profile.get("max_due_cards"), 0) == LEGACY_MAX_DUE_CARDS
+                else profile
+            )
+            for profile in profiles
+        ]
+    migrated[CONFIG_VERSION_KEY] = CONFIG_VERSION
+    return migrated
+
+
+def _write_config(mw: Any, addon_name: str, addon_config: Dict[str, Any]) -> None:
     write_config = getattr(getattr(mw, "addonManager", None), "writeConfig", None)
     if not callable(write_config):
         return
-    migrated = dict(addon_config)
-    migrated["database_path"] = DEFAULT_DATABASE_PATH
     try:
-        write_config(addon_name, migrated)
+        write_config(addon_name, addon_config)
     except Exception:
         pass
 
